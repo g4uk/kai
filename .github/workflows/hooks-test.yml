@@ -1,0 +1,22 @@
+# Test harness-kit hooks: guard.sh regression detection.
+# Runs on every change to hooks/ or evals/. Fails fast; no skips.
+name: hooks-test
+on:
+  pull_request:
+    paths:
+      - 'hooks/**'
+      - 'tests/**'
+      - '.github/workflows/hooks-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'hooks/**'
+      - 'tests/**'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run guard.sh smoke tests
+        run: bash tests/hooks.test.sh

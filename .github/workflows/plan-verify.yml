@@ -1,0 +1,23 @@
+# Verify plan coherence: does the PLAN.md deliver the goal, are tasks in scope,
+# do deps close, do estimates make sense? Runs before merge to catch wishful planning.
+# Put into .github/workflows/. No API key needed — pure static analysis.
+name: plan-verify
+on:
+  pull_request:
+    paths:
+      - 'specs/**/plan.md'
+      - '.claude/**/PLAN.md'
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Check plan coherence
+        run: |
+          # EDIT_ME: inject your plan-check logic here.
+          # Reference: agent-review.yml checks "diff against out-of-scope guard".
+          # This workflow is a blank slate for custom plan validation per project.
+          echo ">> plan-verify: no checks configured yet. Edit this workflow."
+          echo ">> Reference: docs/harness-playbook.md § verify-phase"
+          echo ">> Copy or extend agent-review.yml pattern for custom plan checks."

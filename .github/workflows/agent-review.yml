@@ -1,0 +1,18 @@
+# Auto-review of every PR using the code-review skill. The agent COMMENTS, never merges.
+# Verify action syntax at github.com/anthropics/claude-code-action.
+name: agent-review
+on: { pull_request: { types: [opened, synchronize] } }
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, pull-requests: write }
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Do a code review of this PR against .claude/skills/code-review/SKILL.md.
+            If specs/*/plan.md exists — check the diff against the out-of-scope guard.
+            Format: VERDICT + list of file:line. Comment only; do NOT merge, do NOT push.

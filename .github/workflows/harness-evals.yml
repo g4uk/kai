@@ -1,0 +1,22 @@
+# Invariant #6 as code, Docker edition: agent runs and checks execute in the
+# same harness-runner image locally and in CI — full parity.
+name: harness-evals
+on:
+  pull_request:
+    paths: ['.claude/**', 'CLAUDE.md', 'evals/**', 'docker/**']
+  push:
+    branches: [main]
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Build runner image
+        run: docker build -t harness-runner:latest docker/
+      - name: Run evals (sample on PR, full on main)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_LIMIT: ${{ github.event_name == 'pull_request' && 3 || 0 }}
+        run: ./evals/run.sh
