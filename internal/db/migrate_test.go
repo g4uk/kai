@@ -18,7 +18,7 @@ func TestUp_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if err := Up(db); err != nil {
 		t.Fatalf("first Up() call failed: %v", err)
