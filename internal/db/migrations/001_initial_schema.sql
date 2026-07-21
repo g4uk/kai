@@ -1,0 +1,46 @@
+-- +goose Up
+CREATE TABLE IF NOT EXISTS users (
+    id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    email      VARCHAR(255) NOT NULL UNIQUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS analysis_jobs (
+    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id     BIGINT UNSIGNED NOT NULL,
+    youtube_url TEXT NOT NULL,
+    status      VARCHAR(32) NOT NULL DEFAULT 'pending',
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS participants (
+    id     BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_id BIGINT UNSIGNED NOT NULL,
+    label  VARCHAR(128) NOT NULL,
+    FOREIGN KEY (job_id) REFERENCES analysis_jobs(id)
+);
+
+CREATE TABLE IF NOT EXISTS participant_metrics (
+    id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    participant_id BIGINT UNSIGNED NOT NULL,
+    metric_key     VARCHAR(128) NOT NULL,
+    metric_value   DOUBLE NOT NULL,
+    FOREIGN KEY (participant_id) REFERENCES participants(id)
+);
+
+CREATE TABLE IF NOT EXISTS job_summaries (
+    id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_id     BIGINT UNSIGNED NOT NULL UNIQUE,
+    summary    TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (job_id) REFERENCES analysis_jobs(id)
+);
+
+-- +goose Down
+DROP TABLE IF EXISTS job_summaries;
+DROP TABLE IF EXISTS participant_metrics;
+DROP TABLE IF EXISTS participants;
+DROP TABLE IF EXISTS analysis_jobs;
+DROP TABLE IF EXISTS users;
