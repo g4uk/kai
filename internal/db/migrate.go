@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 
 	"github.com/pressly/goose/v3"
 )
@@ -13,7 +14,11 @@ import (
 var migrationFS embed.FS
 
 func Up(sqlDB *sql.DB) error {
-	provider, err := goose.NewProvider(goose.DialectMySQL, sqlDB, migrationFS)
+	sub, err := fs.Sub(migrationFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("goose sub fs: %w", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectMySQL, sqlDB, sub)
 	if err != nil {
 		return fmt.Errorf("goose new provider: %w", err)
 	}

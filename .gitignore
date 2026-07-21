@@ -1,0 +1,6 @@
+# compiled binaries
+/api
+/worker
+
+# test cache
+/tmp/
