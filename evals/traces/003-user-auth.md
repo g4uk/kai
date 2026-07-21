@@ -15,7 +15,6 @@ per phone number via Redis counters (5 requests/hour, 5 attempts/code), and
 OTP codes are single-use (invalidated on success, on hitting the attempt
 limit, or on TTL expiry, whichever comes first).
 ## Checks
-- [ ] cmd: go test ./... -count=1 (set TEST_DSN to a real MySQL 8.0 DSN and TEST_REDIS_ADDR to a real Redis 7 addr to run the integration tests instead of skipping them)
-- [ ] cmd: docker compose up --build -d && sleep 30 && curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/auth/otp/request -d '{"phone_number":"not-a-number"}' | grep -q '^400$'
-- [ ] cmd: curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/auth/otp/request -d '{"phone_number":"+15550001111"}' | grep -q '^202$'
-- [ ] cmd: for i in 1 2 3 4 5 6; do curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/auth/otp/request -d '{"phone_number":"+15559998888"}'; done | tail -1 | grep -q '^429$'
+- [ ] cmd: go test ./... -count=1
+- [ ] cmd: docker compose up --build -d && sleep 30 && curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/auth/otp/request -d '{"phone_number":"not-a-number"}' | grep -q '^400$' && curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/auth/otp/request -d '{"phone_number":"+15550001111"}' | grep -q '^202$' && (for i in 1 2 3 4 5 6; do curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/auth/otp/request -d '{"phone_number":"+15559998888"}'; done | tail -1 | grep -q '^429$')
+- [ ] (manual) set TEST_DSN to a real MySQL 8.0 DSN and TEST_REDIS_ADDR to a real Redis 7 addr to run the integration tests locally instead of skipping them
