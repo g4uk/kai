@@ -8,7 +8,10 @@ description: >
 
 <!-- EDIT_ME: tool and naming for your project -->
 
-1. Every migration has a down. No exceptions.
+1. Every migration has a down. No exceptions. Down migrations must be
+   exercised with an up→down→up round-trip test, not just written —
+   a down that's never run can silently be broken (e.g. restoring a NOT NULL
+   constraint that now conflicts with rows the up migration allowed).
 2. Backward-compatible by default:
    add column nullable → deploy → backfill → NOT NULL as a separate migration.
 3. DROP TABLE / DROP COLUMN — only after explicit human approval,

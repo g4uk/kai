@@ -16,6 +16,10 @@ description: >
 4. require for preconditions, assert for checks (testify) / expect for RSpec.
 5. A test for generation/calculation verifies the FULL RESULT, not the fact of a call.
 6. No time.Sleep / sleep in tests — synchronize via channels/helpers.
+7. `t.Cleanup` funcs run after the test function returns (i.e., after all
+   `defer`s already ran) in LIFO order among themselves — never bare-`defer`-
+   close a resource (e.g. a DB connection) that a `t.Cleanup` still needs;
+   register the close itself via `t.Cleanup`, ordered to run last.
 
 ## Template (Go)
 func TestX(t *testing.T) {
