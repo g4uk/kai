@@ -1,5 +1,10 @@
-# Invariant #6 as code, Docker edition: agent runs and checks execute in the
-# same harness-runner image locally and in CI — full parity.
+# Invariant #6 as code, Docker edition: the agent's own run always executes
+# in the harness-runner sandbox. Checks (human-approved via /retro) run there
+# too by default, but HARNESS_EVAL_CHECKS_HOST=1 below opts this runner out —
+# it's already a fresh, single-job VM with a native Docker daemon, so
+# docker/docker-compose checks actually work instead of hitting a sandbox
+# with no docker CLI. evals/run.sh itself has no opinion on CI vendor; this
+# is the GitHub-specific wiring for it.
 name: harness-evals
 on:
   pull_request:
@@ -20,4 +25,5 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EVAL_LIMIT: ${{ github.event_name == 'pull_request' && 3 || 0 }}
+          HARNESS_EVAL_CHECKS_HOST: "1"
         run: ./evals/run.sh
