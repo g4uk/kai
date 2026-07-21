@@ -6,6 +6,7 @@ on:
     paths: ['.claude/**', 'CLAUDE.md', 'evals/**', 'docker/**']
   push:
     branches: [main]
+    paths: ['.claude/**', 'CLAUDE.md', 'evals/**', 'docker/**']
 jobs:
   evals:
     runs-on: ubuntu-latest
