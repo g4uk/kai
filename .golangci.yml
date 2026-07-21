@@ -1,16 +1,17 @@
+version: "2"
+
 run:
   timeout: 3m
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - govet
     - staticcheck
-
-issues:
-  exclude-rules:
-    - path: "_test\\.go"
-      linters:
-        - errcheck
-      text: "t\\.(Log|Error|Fatal|Errorf|Fatalf|Logf)"
+  exclusions:
+    rules:
+      - path: "_test\\.go"
+        linters:
+          - errcheck
+        text: "t\\.(Log|Error|Fatal|Errorf|Fatalf|Logf)"
