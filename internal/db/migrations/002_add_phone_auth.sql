@@ -1,0 +1,7 @@
+-- +goose Up
+ALTER TABLE users ADD COLUMN phone_number VARCHAR(20) NULL UNIQUE;
+ALTER TABLE users MODIFY email VARCHAR(255) NULL;
+
+-- +goose Down
+ALTER TABLE users MODIFY email VARCHAR(255) NOT NULL;
+ALTER TABLE users DROP COLUMN phone_number;
