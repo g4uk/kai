@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 type Pinger interface {
@@ -19,6 +20,7 @@ type healthResponse struct {
 	Status string `json:"status"`
 	MySQL  string `json:"mysql"`
 	Redis  string `json:"redis"`
+	Error  string `json:"error,omitempty"`
 }
 
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -28,14 +30,19 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Redis:  "ok",
 	}
 
+	var errs []string
 	if err := h.DB.Ping(r.Context()); err != nil {
 		resp.Status = "error"
 		resp.MySQL = "error"
+		errs = append(errs, "mysql: "+err.Error())
 	}
-
 	if err := h.Redis.Ping(r.Context()); err != nil {
 		resp.Status = "error"
 		resp.Redis = "error"
+		errs = append(errs, "redis: "+err.Error())
+	}
+	if len(errs) > 0 {
+		resp.Error = strings.Join(errs, "; ")
 	}
 
 	status := http.StatusOK

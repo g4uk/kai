@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -11,13 +12,12 @@ import (
 //go:embed migrations/*.sql
 var migrationFS embed.FS
 
-func Up(db *sql.DB) error {
-	goose.SetBaseFS(migrationFS)
-	goose.SetLogger(goose.NopLogger())
-	if err := goose.SetDialect("mysql"); err != nil {
-		return fmt.Errorf("goose set dialect: %w", err)
+func Up(sqlDB *sql.DB) error {
+	provider, err := goose.NewProvider(goose.DialectMySQL, sqlDB, migrationFS)
+	if err != nil {
+		return fmt.Errorf("goose new provider: %w", err)
 	}
-	if err := goose.Up(db, "migrations"); err != nil {
+	if _, err := provider.Up(context.Background()); err != nil {
 		return fmt.Errorf("goose up: %w", err)
 	}
 	return nil

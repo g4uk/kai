@@ -39,11 +39,12 @@ func main() {
 	}
 	defer sqlDB.Close()
 
-	_, err = redisconn.Connect(ctx, redisAddr)
+	redisClient, err := redisconn.Connect(ctx, redisAddr)
 	if err != nil {
 		slog.Error("redis connect failed", "err", err)
 		os.Exit(1)
 	}
+	defer redisClient.Close()
 
 	runLoop(ctx)
 }

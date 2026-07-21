@@ -32,8 +32,6 @@ func buildServer(database handler.Pinger, redis handler.Pinger) *http.ServeMux {
 }
 
 func main() {
-	ctx := context.Background()
-
 	dsn := os.Getenv("DB_DSN")
 	redisAddr := os.Getenv("REDIS_ADDR")
 	port := os.Getenv("PORT")
@@ -41,7 +39,9 @@ func main() {
 		port = "8080"
 	}
 
-	sqlDB, err := db.Connect(ctx, dsn)
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), db.MaxRetryBudget)
+	defer dbCancel()
+	sqlDB, err := db.Connect(dbCtx, dsn)
 	if err != nil {
 		slog.Error("db connect failed", "err", err)
 		os.Exit(1)
@@ -52,7 +52,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	redisClient, err := redisconn.Connect(ctx, redisAddr)
+	redisCtx, redisCancel := context.WithTimeout(context.Background(), redisconn.MaxRetryBudget)
+	defer redisCancel()
+	redisClient, err := redisconn.Connect(redisCtx, redisAddr)
 	if err != nil {
 		slog.Error("redis connect failed", "err", err)
 		os.Exit(1)
