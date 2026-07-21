@@ -63,6 +63,15 @@ for TRACE in "$REPO"/evals/traces/*.md; do
     *) TOTAL_COST=$(awk -v a="$TOTAL_COST" -v b="${COST:-0}" 'BEGIN{ print a + (b+0) }') ;;
   esac
 
+  # No parseable result = the agent run itself failed (auth, container, CLI
+  # error) before producing any trajectory. That's invisible otherwise — the
+  # raw claude-run.sh output only ever went to $JSON, never to the console/CI log.
+  if [ -z "${TURNS:-}" ]; then
+    echo "  - RAW OUTPUT (no valid result — auth/config/container error, not a code failure):" | tee -a "$RESULTS"
+    head -c 2000 "$JSON" 2>/dev/null | tee -a "$RESULTS"
+    echo | tee -a "$RESULTS"
+  fi
+
   OK=1
   # Empty-run detector: the agent MUST have changed something.
   "$EXEC" "$WT" "! git diff --quiet || ! git diff --cached --quiet || [ -n \"\$(git status --porcelain)\" ]" \
