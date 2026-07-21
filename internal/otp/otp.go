@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -38,18 +39,47 @@ type Service struct {
 func codeKey(phone string) string     { return fmt.Sprintf("otp:%s:code", phone) }
 func attemptsKey(phone string) string { return fmt.Sprintf("otp:%s:attempts", phone) }
 func reqCountKey(phone string) string { return fmt.Sprintf("otp:%s:reqcount", phone) }
-func hashCode(code string) string {
-	sum := sha256.Sum256([]byte(code))
+
+// saltedHash returns the salt and its salted-hash of code, per spec.md's
+// constraint that OTP codes are "stored in Redis as a salted hash, never in
+// plaintext": salt = random 16 bytes (hex-encoded), hash =
+// sha256(salt || code) (hex-encoded).
+func saltedHash(salt, code string) string {
+	sum := sha256.Sum256([]byte(salt + code))
 	return hex.EncodeToString(sum[:])
 }
 
-// Request generates a new 6-digit numeric code, stores its salted hash (plain
-// sha256 of the code; no separate salt needed since codes are short-lived,
-// single-use, and rate-limited) in Redis with CodeTTL, resets the attempts
-// counter, invalidates any prior live code, and enforces MaxRequests per
-// RequestWindow via an incrementing counter key. It returns the plaintext
-// code to the caller so the handler can log it (stub for SMS delivery);
-// logging itself does not happen in this package.
+// generateSalt returns a fresh cryptographically random 16-byte salt,
+// hex-encoded.
+func generateSalt() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate salt: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// encodeStoredCode packs salt and hash into the single string value stored
+// under codeKey, as "salt:hash".
+func encodeStoredCode(salt, hash string) string {
+	return salt + ":" + hash
+}
+
+// decodeStoredCode splits a codeKey value back into its salt and hash.
+func decodeStoredCode(stored string) (salt, hash string, err error) {
+	parts := strings.SplitN(stored, ":", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("otp: malformed stored code value")
+	}
+	return parts[0], parts[1], nil
+}
+
+// Request generates a new 6-digit numeric code, stores a per-code salt
+// alongside its salted sha256 hash in Redis with CodeTTL, resets the
+// attempts counter, invalidates any prior live code, and enforces
+// MaxRequests per RequestWindow via an incrementing counter key. It returns
+// the plaintext code to the caller so the handler can log it (stub for SMS
+// delivery); logging itself does not happen in this package.
 func (s *Service) Request(ctx context.Context, phone string) (string, error) {
 	rcKey := reqCountKey(phone)
 	count, err := s.Client.Incr(ctx, rcKey).Result()
@@ -70,8 +100,13 @@ func (s *Service) Request(ctx context.Context, phone string) (string, error) {
 		return "", fmt.Errorf("otp request: generate code: %w", err)
 	}
 
+	salt, err := generateSalt()
+	if err != nil {
+		return "", fmt.Errorf("otp request: generate salt: %w", err)
+	}
+
 	pipe := s.Client.TxPipeline()
-	pipe.Set(ctx, codeKey(phone), hashCode(code), s.CodeTTL)
+	pipe.Set(ctx, codeKey(phone), encodeStoredCode(salt, saltedHash(salt, code)), s.CodeTTL)
 	// attemptsKey shares codeKey's TTL and acts as a liveness marker: it lets
 	// Verify distinguish "code naturally expired" (attemptsKey still present,
 	// codeKey gone) from "never requested / already consumed" (both gone),
@@ -110,7 +145,12 @@ func (s *Service) Verify(ctx context.Context, phone, code string) error {
 		return fmt.Errorf("otp verify: get code: %w", err)
 	}
 
-	if stored != hashCode(code) {
+	salt, hash, err := decodeStoredCode(stored)
+	if err != nil {
+		return fmt.Errorf("otp verify: %w", err)
+	}
+
+	if hash != saltedHash(salt, code) {
 		attempts, err := s.Client.Incr(ctx, aKey).Result()
 		if err != nil {
 			return fmt.Errorf("otp verify: incr attempts: %w", err)
