@@ -37,14 +37,14 @@ func main() {
 		slog.Error("db connect failed", "err", err)
 		os.Exit(1)
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 
 	redisClient, err := redisconn.Connect(ctx, redisAddr)
 	if err != nil {
 		slog.Error("redis connect failed", "err", err)
 		os.Exit(1)
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	runLoop(ctx)
 }

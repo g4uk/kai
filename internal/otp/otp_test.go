@@ -48,7 +48,7 @@ func testRedisClient(t *testing.T) *redis.Client {
 	}
 
 	client := redis.NewClient(&redis.Options{Addr: addr})
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		t.Fatalf("redis ping: %v", err)

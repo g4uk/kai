@@ -23,7 +23,7 @@ func Connect(ctx context.Context, addr string) (*redis.Client, error) {
 	delay := 100 * time.Millisecond
 	for {
 		if ctx.Err() != nil {
-			client.Close()
+			_ = client.Close()
 			return nil, fmt.Errorf("redis connect: %w", ctx.Err())
 		}
 
@@ -36,21 +36,21 @@ func Connect(ctx context.Context, addr string) (*redis.Client, error) {
 		}
 
 		if ctx.Err() != nil {
-			client.Close()
+			_ = client.Close()
 			return nil, fmt.Errorf("redis connect: %w", ctx.Err())
 		}
 
 		// Stop early if remaining budget is less than the next delay.
 		if deadline, ok := ctx.Deadline(); ok {
 			if time.Until(deadline) < delay {
-				client.Close()
+				_ = client.Close()
 				return nil, fmt.Errorf("redis connect: %w", context.DeadlineExceeded)
 			}
 		}
 
 		select {
 		case <-ctx.Done():
-			client.Close()
+			_ = client.Close()
 			return nil, fmt.Errorf("redis connect: %w", ctx.Err())
 		case <-time.After(delay):
 			delay *= 2

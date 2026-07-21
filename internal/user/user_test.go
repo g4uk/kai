@@ -34,7 +34,7 @@ func testDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	t.Cleanup(func() { sqlDB.Close() })
+	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	if err := db.Up(sqlDB); err != nil {
 		t.Fatalf("db.Up: %v", err)

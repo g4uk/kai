@@ -23,7 +23,7 @@ func Connect(ctx context.Context, dsn string) (*sql.DB, error) {
 	delay := 100 * time.Millisecond
 	for {
 		if ctx.Err() != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("db connect: %w", ctx.Err())
 		}
 
@@ -36,21 +36,21 @@ func Connect(ctx context.Context, dsn string) (*sql.DB, error) {
 		}
 
 		if ctx.Err() != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("db connect: %w", ctx.Err())
 		}
 
 		// Stop early if the remaining budget is less than the next delay.
 		if deadline, ok := ctx.Deadline(); ok {
 			if time.Until(deadline) < delay {
-				db.Close()
+				_ = db.Close()
 				return nil, fmt.Errorf("db connect: %w", context.DeadlineExceeded)
 			}
 		}
 
 		select {
 		case <-ctx.Done():
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("db connect: %w", ctx.Err())
 		case <-time.After(delay):
 			delay *= 2

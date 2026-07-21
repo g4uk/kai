@@ -28,7 +28,7 @@ func TestUp_PhoneAuthMigration(t *testing.T) {
 	// instead run immediately when this function returns — before any
 	// t.Cleanup callback — causing the DELETE below to silently no-op against
 	// a closed connection and leak rows across test runs.
-	t.Cleanup(func() { sqlDB.Close() })
+	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	if err := Up(sqlDB); err != nil {
 		t.Fatalf("Up() failed: %v", err)
