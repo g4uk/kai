@@ -22,7 +22,13 @@ func TestUp_PhoneAuthMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	defer sqlDB.Close()
+	// t.Cleanup runs LIFO: registering Close here, before the row-cleanup
+	// below, means Close runs LAST (after the DELETE cleanup has already run
+	// against a still-open connection). A bare `defer sqlDB.Close()` would
+	// instead run immediately when this function returns — before any
+	// t.Cleanup callback — causing the DELETE below to silently no-op against
+	// a closed connection and leak rows across test runs.
+	t.Cleanup(func() { sqlDB.Close() })
 
 	if err := Up(sqlDB); err != nil {
 		t.Fatalf("Up() failed: %v", err)
