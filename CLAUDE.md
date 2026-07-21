@@ -19,6 +19,7 @@ Go · Docker Compose · MySQL · Redis · Hetzner VPS
 - No ORM — raw SQL via `database/sql` or `sqlx`
 - No global mutable state
 - Every feature starts with specs/<name>/spec.md — no spec, no code
+- Tests ship in the same commit as their implementation — never committed separately
 
 ## YAGNI gate
 - Interface/abstraction — at the SECOND implementation, not before
@@ -26,7 +27,8 @@ Go · Docker Compose · MySQL · Redis · Hetzner VPS
 - Every file must be required by the CURRENT spec
 
 ## Commands
-- tests: `go test ./...` · lint: `golangci-lint run` · build: `go build ./cmd/...` · migrations: `goose up`
+- tests: `go test ./...` · lint: `golangci-lint run` · build: `go build ./cmd/...`
+- migrations (CLI): `goose -dir internal/db/migrations mysql "$DB_DSN" up` — api runs them automatically at startup via embedded FS
 
 ## Project map
 docs/surface-map.md — read before tasks touching >1 module.
