@@ -73,9 +73,14 @@ for TRACE in "$REPO"/evals/traces/*.md; do
   fi
 
   OK=1
-  # Empty-run detector: the agent MUST have changed something.
+  # No-diff note: informational only, NOT an automatic fail. A trace whose
+  # feature has already merged into $BASE_BRANCH is EXPECTED to produce no
+  # diff on replay — the real signal is whether the checks below still pass,
+  # not whether anything changed. Making this a hard FAIL meant every trace
+  # became permanently unpassable the moment its feature merged (caught live
+  # on kumite-analyzer's first accumulated-trace run: 0/2, both empty-run).
   "$EXEC" "$WT" "! git diff --quiet || ! git diff --cached --quiet || [ -n \"\$(git status --porcelain)\" ]" \
-    || { OK=0; echo "  - FAIL: empty run (no diff)" | tee -a "$RESULTS"; }
+    || echo "  - NOTE: no diff (feature may already be present on $BASE_BRANCH)" | tee -a "$RESULTS"
 
   # Trajectory gate: too many turns on one trace means the agent was thrashing,
   # not converging — a real quality problem even if it stumbled onto a passing diff.
