@@ -15,6 +15,21 @@
 set -u
 REPO=$(git rev-parse --show-toplevel)
 KIT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Self-adjusting gate: skip entirely — before requiring docker, before any
+# API call — if there aren't enough traces yet for a baseline worth
+# protecting. Default 0 = always run (a human invoking this manually always
+# means it); CI sets a real threshold (see ci/harness-evals.yml's
+# EVAL_MIN_TRACES) so its triggers can stay on from day one without ever
+# needing a human to hand-edit the workflow later as traces accumulate.
+MIN_TRACES="${EVAL_MIN_TRACES:-0}"
+TRACE_COUNT=$(find "$REPO/evals/traces" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$TRACE_COUNT" -lt "$MIN_TRACES" ]; then
+  echo "Only $TRACE_COUNT trace(s) in evals/traces/ — need $MIN_TRACES for a baseline"
+  echo "(scenarios/greenfield.md Stage 3). Skipping; no docker required, no API calls made."
+  exit 0
+fi
+
 RUN="$KIT_DIR/docker/claude-run.sh"
 EXEC="$KIT_DIR/docker/exec.sh"
 
