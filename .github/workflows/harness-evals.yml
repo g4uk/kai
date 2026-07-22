@@ -6,12 +6,19 @@
 # with no docker CLI. evals/run.sh itself has no opinion on CI vendor; this
 # is the GitHub-specific wiring for it.
 name: harness-evals
+# Auto-triggers OFF by default — this costs a real API call per trace, and
+# with <6 traces (Stage 3 trigger in scenarios/greenfield.md) it fires on
+# every /retro commit (which always touches CLAUDE.md + evals/traces/) for
+# little regression-catching value yet. Run manually via workflow_dispatch
+# (Actions tab → harness-evals → Run workflow, or `gh workflow run
+# harness-evals`) until you have a real baseline. Then uncomment below.
 on:
-  pull_request:
-    paths: ['.claude/**', 'CLAUDE.md', 'evals/**', 'docker/**']
-  push:
-    branches: [main]
-    paths: ['.claude/**', 'CLAUDE.md', 'evals/**', 'docker/**']
+  workflow_dispatch: {}
+  # pull_request:
+  #   paths: ['.claude/**', 'CLAUDE.md', 'evals/**', 'docker/**']
+  # push:
+  #   branches: [main]
+  #   paths: ['.claude/**', 'CLAUDE.md', 'evals/**', 'docker/**']
 jobs:
   evals:
     runs-on: ubuntu-latest
