@@ -1,17 +1,53 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 
-// Step 1 (plan.md): scaffold smoke test — proves the Vite + React + TS +
-// Vitest + Tailwind toolchain works end-to-end, before any routes/features
-// exist. `text-xl` is the cheapest signal that a Tailwind utility class made
-// it into rendered markup (jsdom cannot compute actual visual style).
+// Reviewer-found gap fix: App.tsx was still the step-1 scaffold placeholder
+// and main.tsx never mounted the router/AuthProvider/route tree built in
+// step 4, so a real page load showed only a static heading with no login
+// form and no routes. Every other suite (router.test.tsx, LoginPage.test.tsx,
+// etc.) renders pieces in isolation wrapped in its own MemoryRouter/
+// AuthProvider, so none of them exercise the real, unmodified `App` export
+// the way `main.tsx` actually does. This test renders `<App />` itself (no
+// MemoryRouter, no manual AuthProvider wiring) to prove App.tsx really
+// composes BrowserRouter + AuthProvider + AppRoutes end-to-end.
+
+const { listJobs, ApiErrorMock } = vi.hoisted(() => {
+  class ApiErrorMock extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+      this.name = "ApiError";
+    }
+  }
+  return { listJobs: vi.fn(), ApiErrorMock };
+});
+
+vi.mock("./api/client", () => ({
+  listJobs,
+  getJob: vi.fn(),
+  requestOtp: vi.fn(),
+  verifyOtp: vi.fn(),
+  logout: vi.fn(),
+  createJob: vi.fn(),
+  setOnUnauthorized: vi.fn(),
+  ApiError: ApiErrorMock,
+}));
+
 describe("App", () => {
-  it("renders the placeholder heading with a Tailwind utility class", () => {
+  beforeEach(() => {
+    listJobs.mockReset();
+    window.history.pushState({}, "", "/");
+  });
+
+  it("renders the login (phone-number) screen at the root route when unauthenticated", async () => {
+    listJobs.mockRejectedValue(new ApiErrorMock(401, "unauthorized"));
+
     render(<App />);
 
-    const heading = screen.getByText("Kumite Analyzer");
-    expect(heading).toBeInTheDocument();
-    expect(heading).toHaveClass("text-xl");
+    await waitFor(() =>
+      expect(screen.getByLabelText(/phone number/i)).toBeInTheDocument(),
+    );
   });
 });

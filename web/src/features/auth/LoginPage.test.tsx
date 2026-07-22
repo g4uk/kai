@@ -87,6 +87,24 @@ describe("LoginPage", () => {
     expect(onLoggedIn).toHaveBeenCalledOnce();
   });
 
+  it("a rapid double-click on the phone submit button only fires one requestOtp call", async () => {
+    let resolveRequest!: () => void;
+    requestOtp.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveRequest = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    render(<LoginPage onLoggedIn={() => {}} />);
+
+    await user.type(screen.getByLabelText(/phone number/i), "+15551234567");
+    const sendCodeButton = screen.getByRole("button", { name: /send code/i });
+    await user.dblClick(sendCodeButton);
+
+    expect(requestOtp).toHaveBeenCalledOnce();
+    resolveRequest();
+  });
+
   it("a rapid double-click on the OTP submit button only fires one verifyOtp call (edge case 7)", async () => {
     requestOtp.mockResolvedValue(undefined);
     let resolveVerify!: () => void;

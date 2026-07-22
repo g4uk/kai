@@ -16,15 +16,22 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
   const { step, error, submitPhone, submitOtp } = useOtpFlow(onLoggedIn);
   const [phone, setPhone] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
+  // Guards against a rapid double-click firing requestOtp twice, mirroring
+  // the isSubmitting guard the OTP step already uses (reviewer nit fix).
+  const [isSubmittingPhone, setIsSubmittingPhone] = useState(false);
 
   function handlePhoneSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSubmittingPhone) {
+      return;
+    }
     if (!E164_PATTERN.test(phone)) {
       setValidationError("Enter a valid phone number (e.g. +15551234567).");
       return;
     }
     setValidationError(null);
-    void submitPhone(phone);
+    setIsSubmittingPhone(true);
+    void submitPhone(phone).finally(() => setIsSubmittingPhone(false));
   }
 
   if (step === "otp" || step === "submitting") {
@@ -47,10 +54,13 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
             type="tel"
             value={phone}
             onChange={(event) => setPhone(event.target.value)}
+            disabled={isSubmittingPhone}
           />
         </label>
         {validationError !== null && <p role="alert">{validationError}</p>}
-        <button type="submit">Send code</button>
+        <button type="submit" disabled={isSubmittingPhone}>
+          Send code
+        </button>
       </form>
     </div>
   );
