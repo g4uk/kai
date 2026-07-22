@@ -1,5 +1,5 @@
 # harness-runner: sandboxed environment for ALL project-touching agent runs.
-# Rebuild after changing: docker build -t harness-runner:latest docker/
+# Rebuild after changing: docker build -t harness-runner:latest harness/docker/
 FROM node:20-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

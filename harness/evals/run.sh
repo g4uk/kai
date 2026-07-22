@@ -23,9 +23,9 @@ KIT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # EVAL_MIN_TRACES) so its triggers can stay on from day one without ever
 # needing a human to hand-edit the workflow later as traces accumulate.
 MIN_TRACES="${EVAL_MIN_TRACES:-0}"
-TRACE_COUNT=$(find "$REPO/evals/traces" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+TRACE_COUNT=$(find "$REPO/harness/evals/traces" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 if [ "$TRACE_COUNT" -lt "$MIN_TRACES" ]; then
-  echo "Only $TRACE_COUNT trace(s) in evals/traces/ — need $MIN_TRACES for a baseline"
+  echo "Only $TRACE_COUNT trace(s) in harness/evals/traces/ — need $MIN_TRACES for a baseline"
   echo "(scenarios/greenfield.md Stage 3). Skipping; no docker required, no API calls made."
   exit 0
 fi
@@ -58,8 +58,8 @@ run_check() {
   fi
 }
 
-RESULTS="$REPO/evals/results/$(date +%F-%H%M).md"
-mkdir -p "$REPO/evals/results"
+RESULTS="$REPO/harness/evals/results/$(date +%F-%H%M).md"
+mkdir -p "$REPO/harness/evals/results"
 echo "# Eval run $(date -Iseconds)" | tee "$RESULTS"
 PASS=0; TOTAL=0
 
@@ -79,7 +79,7 @@ LIMIT="${EVAL_LIMIT:-0}"
 MAX_TURNS="${EVAL_MAX_TURNS:-30}"
 TOTAL_COST=0
 
-for TRACE in "$REPO"/evals/traces/*.md; do
+for TRACE in "$REPO"/harness/evals/traces/*.md; do
   [ -e "$TRACE" ] || continue
   [ "$LIMIT" != "0" ] && [ "$TOTAL" -ge "$LIMIT" ] && break
   NAME=$(basename "$TRACE" .md); TOTAL=$((TOTAL+1))

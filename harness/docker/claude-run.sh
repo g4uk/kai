@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sandboxed one-shot Claude run — the ONLY sanctioned way to execute an agent
 # against project code. Usage:
-#   docker/claude-run.sh <project-dir> <prompt> [output-file]
+#   harness/docker/claude-run.sh <project-dir> <prompt> [output-file]
 #
 # Why --dangerously-skip-permissions is safe HERE and only here:
 # the boundary is the container, not the permission config —
@@ -24,5 +24,5 @@ docker run --rm \
   timeout 300 claude -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions \
   > "$OUT" 2>&1
 # stream-json emits one JSON object per line (system/assistant/user/result) instead
-# of a single summary object — evals/run.sh needs the per-turn tool_use trajectory,
+# of a single summary object — harness/evals/run.sh needs the per-turn tool_use trajectory,
 # not just the final result. The last line is still the same "result" summary.

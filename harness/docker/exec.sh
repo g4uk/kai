@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run an arbitrary command against project code INSIDE the sandbox.
-# Usage: docker/exec.sh <project-dir> <command...>
+# Usage: harness/docker/exec.sh <project-dir> <command...>
 set -eu
 DIR=$(cd "$1" && pwd); shift
 IMG="${HARNESS_IMAGE:-harness-runner:latest}"
