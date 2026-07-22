@@ -11,26 +11,29 @@ import { AppRoutes } from "./router";
 // behavior only, decoupled from those screens' own content (tested in their
 // own step 5-7 suites).
 
-const { listJobs, getJob, setOnUnauthorized, ApiErrorMock } = vi.hoisted(() => {
-  class ApiErrorMock extends Error {
-    status: number;
-    constructor(status: number, message: string) {
-      super(message);
-      this.status = status;
-      this.name = "ApiError";
+const { listJobs, getJob, getAuthMe, setOnUnauthorized, ApiErrorMock } =
+  vi.hoisted(() => {
+    class ApiErrorMock extends Error {
+      status: number;
+      constructor(status: number, message: string) {
+        super(message);
+        this.status = status;
+        this.name = "ApiError";
+      }
     }
-  }
-  return {
-    listJobs: vi.fn(),
-    getJob: vi.fn(),
-    setOnUnauthorized: vi.fn(),
-    ApiErrorMock,
-  };
-});
+    return {
+      listJobs: vi.fn(),
+      getJob: vi.fn(),
+      getAuthMe: vi.fn(),
+      setOnUnauthorized: vi.fn(),
+      ApiErrorMock,
+    };
+  });
 
 vi.mock("../api/client", () => ({
   listJobs,
   getJob,
+  getAuthMe,
   setOnUnauthorized,
   requestOtp: vi.fn(),
   verifyOtp: vi.fn(),
@@ -74,23 +77,25 @@ describe("router / AuthContext / ProtectedRoute", () => {
   beforeEach(() => {
     listJobs.mockReset();
     getJob.mockReset();
+    getAuthMe.mockReset();
     setOnUnauthorized.mockReset();
   });
 
-  it("an unauthenticated root load shows the login screen and probes listJobs exactly once, with no getJob call (criterion 1)", async () => {
-    listJobs.mockRejectedValue(new ApiErrorMock(401, "unauthorized"));
+  it("an unauthenticated root load shows the login screen and probes getAuthMe exactly once, with no listJobs or getJob call (criterion 1)", async () => {
+    getAuthMe.mockRejectedValue(new ApiErrorMock(401, "unauthorized"));
 
     renderApp(["/"]);
 
     await waitFor(() =>
       expect(screen.getByLabelText(/phone number/i)).toBeInTheDocument(),
     );
-    expect(listJobs).toHaveBeenCalledOnce();
+    expect(getAuthMe).toHaveBeenCalledOnce();
+    expect(listJobs).not.toHaveBeenCalled();
     expect(getJob).not.toHaveBeenCalled();
   });
 
   it("a deep link to /jobs/999 while logged out redirects to /login without calling getJob (edge case 8)", async () => {
-    listJobs.mockRejectedValue(new ApiErrorMock(401, "unauthorized"));
+    getAuthMe.mockRejectedValue(new ApiErrorMock(401, "unauthorized"));
 
     renderApp(["/jobs/999"]);
 
@@ -102,6 +107,7 @@ describe("router / AuthContext / ProtectedRoute", () => {
   });
 
   it("a 401 surfaced from any call while on /jobs redirects to /login (criterion 15)", async () => {
+    getAuthMe.mockResolvedValue(undefined);
     listJobs.mockResolvedValue([]);
 
     renderApp(["/jobs"]);
@@ -122,7 +128,8 @@ describe("router / AuthContext / ProtectedRoute", () => {
     expect(screen.queryByText("Job List Screen")).not.toBeInTheDocument();
   });
 
-  it("logout then browser back re-probes listJobs rather than rendering a cached job list (criterion 16)", async () => {
+  it("logout then browser back re-probes getAuthMe rather than rendering a cached job list (criterion 16)", async () => {
+    getAuthMe.mockResolvedValue(undefined);
     listJobs.mockResolvedValue([]);
     const user = userEvent.setup();
 
@@ -131,7 +138,7 @@ describe("router / AuthContext / ProtectedRoute", () => {
     await waitFor(() =>
       expect(screen.getByText("Job List Screen")).toBeInTheDocument(),
     );
-    expect(listJobs).toHaveBeenCalledOnce();
+    expect(getAuthMe).toHaveBeenCalledOnce();
 
     await user.click(screen.getByRole("button", { name: /log out/i }));
 
@@ -144,11 +151,11 @@ describe("router / AuthContext / ProtectedRoute", () => {
     );
 
     // The re-fetch itself is the proof of "no cached view": a stale/cached
-    // render would never re-invoke listJobs on remount. By the time the
+    // render would never re-invoke getAuthMe on remount. By the time the
     // second call has committed, ProtectedRoute has already re-rendered
     // with the fresh (anonymous) status, so asserting the call count here
     // is sufficient — asserting on the resulting DOM afterward is racy
     // (the re-render from the second call may already have committed).
-    await waitFor(() => expect(listJobs).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getAuthMe).toHaveBeenCalledTimes(2));
   });
 });

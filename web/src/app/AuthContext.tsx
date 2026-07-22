@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  listJobs,
+  getAuthMe,
   logout as apiLogout,
   setOnUnauthorized,
 } from "../api/client";
@@ -18,7 +18,7 @@ export type AuthStatus = "unknown" | "authenticated" | "anonymous";
 
 interface AuthContextValue {
   status: AuthStatus;
-  /** Probes GET /jobs once, if status is still "unknown" (called by ProtectedRoute on mount). */
+  /** Probes GET /auth/me once, if status is still "unknown" (called by ProtectedRoute on mount). */
   ensureChecked: () => void;
   /** Marks the session as authenticated without re-probing (used right after OTP verify). */
   setAuthenticated: () => void;
@@ -29,11 +29,11 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 /**
- * Holds session-auth state (specs/ui/plan.md step 4). There is no
- * `/auth/me` endpoint, so auth is detected by probing `GET /jobs`: success
- * means authenticated, any error (including 401) means anonymous. Also
- * registers itself as the API client's global 401 handler so any call,
- * anywhere, that gets a 401 clears state and lets ProtectedRoute redirect.
+ * Holds session-auth state (specs/ui/plan.md step 4). Auth is detected by
+ * probing `GET /auth/me` (specs/auth-me/spec.md): success (204) means
+ * authenticated, any error (including 401) means anonymous. Also registers
+ * itself as the API client's global 401 handler so any call, anywhere, that
+ * gets a 401 clears state and lets ProtectedRoute redirect.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("unknown");
@@ -51,7 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     checking.current = true;
-    listJobs()
+    getAuthMe()
       .then(() => setStatus("authenticated"))
       .catch(() => setStatus("anonymous"))
       .finally(() => {

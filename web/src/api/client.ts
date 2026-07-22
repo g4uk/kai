@@ -88,3 +88,8 @@ export async function getJob(id: number): Promise<JobDetail> {
   const response = await apiFetch(`/jobs/${id}`);
   return (await response.json()) as JobDetail;
 }
+
+/** Resolves on a 204 (valid session); rejects with ApiError{status:401} otherwise. */
+export async function getAuthMe(): Promise<void> {
+  await apiFetch("/auth/me");
+}

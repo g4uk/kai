@@ -8,6 +8,7 @@ import {
   listJobs,
   createJob,
   getJob,
+  getAuthMe,
 } from "./client";
 import type { Job, JobDetail } from "./types";
 
@@ -130,6 +131,13 @@ describe("api client", () => {
       );
       expect(calls[0].url).toContain(`/api/jobs/${sampleJobDetail.id}`);
     });
+
+    it("getAuthMe resolves on a 204 with no body", async () => {
+      const { calls } = stubFetch({ status: 204 });
+
+      await expect(getAuthMe()).resolves.toBeUndefined();
+      expect(calls[0].url).toContain("/api/auth/me");
+    });
   });
 
   describe("plain-text error bodies (not JSON) reject with an ApiError", () => {
@@ -163,6 +171,19 @@ describe("api client", () => {
       expect(err).toBeInstanceOf(ApiError);
       expect((err as ApiError).message).not.toContain("[object Object]");
       expect((err as ApiError).message).not.toMatch(/^\s*[{[]/);
+    });
+  });
+
+  describe("getAuthMe rejects with an ApiError on a 401", () => {
+    it("getAuthMe rejects with an ApiError{status:401} when no session cookie resolves", async () => {
+      stubFetch({ status: 401, textBody: "unauthorized" });
+
+      const rejection = getAuthMe();
+      await expect(rejection).rejects.toBeInstanceOf(ApiError);
+      await expect(rejection).rejects.toMatchObject({
+        status: 401,
+        message: "unauthorized",
+      });
     });
   });
 

@@ -12,7 +12,7 @@ import App from "./App";
 // MemoryRouter, no manual AuthProvider wiring) to prove App.tsx really
 // composes BrowserRouter + AuthProvider + AppRoutes end-to-end.
 
-const { listJobs, ApiErrorMock } = vi.hoisted(() => {
+const { getAuthMe, ApiErrorMock } = vi.hoisted(() => {
   class ApiErrorMock extends Error {
     status: number;
     constructor(status: number, message: string) {
@@ -21,12 +21,13 @@ const { listJobs, ApiErrorMock } = vi.hoisted(() => {
       this.name = "ApiError";
     }
   }
-  return { listJobs: vi.fn(), ApiErrorMock };
+  return { getAuthMe: vi.fn(), ApiErrorMock };
 });
 
 vi.mock("./api/client", () => ({
-  listJobs,
+  listJobs: vi.fn(),
   getJob: vi.fn(),
+  getAuthMe,
   requestOtp: vi.fn(),
   verifyOtp: vi.fn(),
   logout: vi.fn(),
@@ -37,12 +38,12 @@ vi.mock("./api/client", () => ({
 
 describe("App", () => {
   beforeEach(() => {
-    listJobs.mockReset();
+    getAuthMe.mockReset();
     window.history.pushState({}, "", "/");
   });
 
   it("renders the login (phone-number) screen at the root route when unauthenticated", async () => {
-    listJobs.mockRejectedValue(new ApiErrorMock(401, "unauthorized"));
+    getAuthMe.mockRejectedValue(new ApiErrorMock(401, "unauthorized"));
 
     render(<App />);
 
