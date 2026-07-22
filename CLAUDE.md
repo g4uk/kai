@@ -20,6 +20,7 @@ Go · Docker Compose · MySQL · Redis · Hetzner VPS
 - No ORM — raw SQL via `database/sql` or `sqlx`
 - No global mutable state
 - Every feature starts with specs/<name>/spec.md — no spec, no code
+- spec.md/plan.md must be committed in their own commit immediately after writing, before any implementation begins — an uncommitted spec/plan file does not satisfy "no spec, no code" (recurred 3x: walking-skeleton, ui, auth-me)
 - Tests ship in the same commit as their implementation — never committed separately
 - Any deviation from an explicit spec constraint must be surfaced explicitly (commit message/PR description), never left as only an inline code comment
 
