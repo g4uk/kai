@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { JobResultsPage } from "./JobResultsPage";
 import type { JobDetail } from "../../api/types";
@@ -94,11 +94,25 @@ describe("JobResultsPage", () => {
 
     expect(await screen.findByText("Participant A")).toBeInTheDocument();
     expect(screen.getByText("Participant B")).toBeInTheDocument();
-    expect(screen.getByText("strikes_landed")).toBeInTheDocument();
-    expect(screen.getByText("12")).toBeInTheDocument();
-    expect(screen.getByText("advantage_points")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
-    expect(screen.getByText("5")).toBeInTheDocument();
+
+    // Both participants share the "strikes_landed" key (on purpose, to
+    // exercise generic rendering per participant) — scope queries to each
+    // participant's own section rather than querying document-wide, since
+    // that key/value legitimately appears twice in the DOM.
+    const sectionA = within(
+      screen.getByRole("region", { name: "Participant A" }),
+    );
+    expect(sectionA.getByText("strikes_landed")).toBeInTheDocument();
+    expect(sectionA.getByText("12")).toBeInTheDocument();
+    expect(sectionA.getByText("advantage_points")).toBeInTheDocument();
+    expect(sectionA.getByText("3")).toBeInTheDocument();
+
+    const sectionB = within(
+      screen.getByRole("region", { name: "Participant B" }),
+    );
+    expect(sectionB.getByText("strikes_landed")).toBeInTheDocument();
+    expect(sectionB.getByText("5")).toBeInTheDocument();
+
     expect(screen.getByText("Participant A won by ippon.")).toBeInTheDocument();
   });
 
