@@ -7,13 +7,13 @@ write code yourself; you pass CONDENSED results between agents. Check the dispat
 is unnecessary and do it directly.
 
 1. researcher: what this feature touches, which modules/risks
-2. /spec $ARGUMENTS based on the report → SHOW ME, wait for approval      ← STOP
-3. /plan $ARGUMENTS → SHOW ME, wait for approval                          ← STOP
+2. /harness:spec $ARGUMENTS based on the report → SHOW ME, wait for approval      ← STOP
+3. /harness:plan $ARGUMENTS → SHOW ME, wait for approval                          ← STOP
 4. test-writer: failing tests per plan
 5. implementer: step-by-step implementation until green
 6. reviewer: verdict on the diff. REQUEST_CHANGES → back to implementer (max 2 rounds,
    then escalate to me)
-7. /verify $ARGUMENTS
-8. Remind me to run /retro $ARGUMENTS after the merge
+7. /harness:verify $ARGUMENTS
+8. Remind me to run /harness:retro $ARGUMENTS after the merge
 
 After each stage — one status line: stage / result / approx tokens.

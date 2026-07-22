@@ -1,5 +1,5 @@
 # Invariant #6 as code, Docker edition: the agent's own run always executes
-# in the harness-runner sandbox. Checks (human-approved via /retro) run there
+# in the harness-runner sandbox. Checks (human-approved via /harness:retro) run there
 # too by default, but HARNESS_EVAL_CHECKS_HOST=1 below opts this runner out —
 # it's already a fresh, single-job VM with a native Docker daemon, so
 # docker/docker-compose checks actually work instead of hitting a sandbox

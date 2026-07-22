@@ -1,7 +1,7 @@
 #!/bin/bash
 # Eval runner. POLICY: the agent's own run ALWAYS happens inside the
 # harness-runner Docker container — no exceptions, no environment check.
-# Checks (base check + trace cmd:, human-approved via /retro before they're
+# Checks (base check + trace cmd:, human-approved via /harness:retro before they're
 # ever committed) run in that same sandbox by default, but directly on the
 # host when HARNESS_EVAL_CHECKS_HOST=1 (see run_check below) — for a CI
 # environment that's already a fresh, isolated, single-job VM with its own
@@ -37,7 +37,7 @@ if [ "${HARNESS_ALLOW_HOST:-}" != "1" ]; then
   command -v docker >/dev/null || { echo "FATAL: docker required (policy: project runs only in Docker)."; exit 1; }
 fi
 
-# Checks (base check + trace cmd:) are human-approved commands (via /retro's
+# Checks (base check + trace cmd:) are human-approved commands (via /harness:retro's
 # approval gate before they're ever committed) — not agent-authored arbitrary
 # code. The agent's own run ($RUN, above) ALWAYS stays in the harness-runner
 # sandbox regardless of environment; that boundary is unrelated to this one.
