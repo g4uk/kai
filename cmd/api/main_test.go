@@ -175,6 +175,49 @@ type stubJobStore struct {
 
 const testJobsSessionCookieName = "session_id"
 
+// ----------------------------------------------------------------------------
+// TDD RED PHASE NOTE (specs/auth-me/plan.md step 2)
+//
+// buildServer must register GET /auth/me, wrapped in handler.SessionMiddleware
+// (using the existing sessionValidator param, which previously had no
+// consumer). This proves both that the route exists and that it's protected
+// by SessionMiddleware (401 without a session cookie, 204 with one).
+// ----------------------------------------------------------------------------
+
+func TestBuildServer_RegistersAuthMeRoute(t *testing.T) {
+	mux := buildServer(
+		stubPinger{}, stubPinger{},
+		stubAuthOTPRequester{}, stubAuthOTPVerifier{},
+		stubAuthSessionCreator{}, stubAuthSessionDeleter{}, stubAuthSessionValidator{},
+		stubAuthUserFinder{},
+		stubJobStore{},
+	)
+	if mux == nil {
+		t.Fatal("buildServer returned nil mux")
+	}
+
+	t.Run("GET /auth/me without session cookie is rejected with 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status: got %d, want %d", rec.Code, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("GET /auth/me with valid session cookie returns 204", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+		req.AddCookie(&http.Cookie{Name: testJobsSessionCookieName, Value: "sess-1"})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Errorf("status: got %d, want %d", rec.Code, http.StatusNoContent)
+		}
+	})
+}
+
 func TestBuildServer_RegistersJobRoutes(t *testing.T) {
 	mux := buildServer(
 		stubPinger{}, stubPinger{},

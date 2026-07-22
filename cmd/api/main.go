@@ -150,10 +150,8 @@ func buildServer(
 	// (spec criterion 12's with-cookie case plus the documented assumption in
 	// internal/handler/auth_test.go), and SessionMiddleware would instead
 	// reject that request with 401 before LogoutHandler ever runs.
-	// sessionValidator is accepted here for buildServer's signature (shared by
-	// SessionMiddleware once a protected, non-auth route exists) but has no
-	// consumer yet in this spec's scope.
 	mux.Handle("POST /auth/logout", &handler.LogoutHandler{Sessions: sessionDeleter})
+	mux.Handle("GET /auth/me", handler.SessionMiddleware(&handler.MeHandler{}, sessionValidator))
 	mux.Handle("POST /jobs", handler.SessionMiddleware(&handler.CreateJobHandler{Jobs: jobs}, sessionValidator))
 	mux.Handle("GET /jobs", handler.SessionMiddleware(&handler.ListJobsHandler{Jobs: jobs}, sessionValidator))
 	mux.Handle("GET /jobs/{id}", handler.SessionMiddleware(&handler.GetJobHandler{Jobs: jobs}, sessionValidator))
