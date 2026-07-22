@@ -24,3 +24,8 @@ Cost: No horizontal scaling without migrating to an orchestrator.
 Why: Each resource (analysis_jobs, etc.) carries a user_id; all queries filter by the authenticated user's ID. Sufficient for a single-tenant-per-account model without schema-level separation.
 Rejected: Schema-per-tenant — unnecessary complexity at current scale.
 Cost: Relies on correct query-level filtering; no DB-enforced cross-user wall beyond FK constraints.
+
+## 006: React SPA served via nginx reverse proxy in a new `web` Compose service
+Why: First frontend framework choice for the project — gives the existing OTP auth and jobs API a user-facing surface (login, submit, track, view results). Serving the built React bundle through nginx on the same origin as the API (reverse-proxying `/api/*`) keeps the `SameSite=Strict` session cookie flowing on every request, with no cross-origin/shared-domain TLS workaround needed.
+Rejected: A separate origin or subdomain for the SPA — would break the `SameSite=Strict` cookie set by the user-auth spec, or force relaxing that cookie attribute for no other reason than serving topology. Server-side rendering or a Go-templated UI — would couple UI release velocity to Go redeploys and duplicate the JSON API that's already built.
+Cost: Two runtime images to build and deploy instead of one; the nginx proxy config is one more piece of infra that must stay in sync with the API's route surface if routes ever move or gain a prefix.
