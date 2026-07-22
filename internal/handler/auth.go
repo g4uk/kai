@@ -192,6 +192,17 @@ func (h *LogoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// ---- MeHandler ------------------------------------------------------------
+
+// MeHandler handles GET /auth/me, wrapped in SessionMiddleware. Reaching
+// ServeHTTP at all (past SessionMiddleware) is the only fact it reports, so
+// it does nothing but write 204.
+type MeHandler struct{}
+
+func (h *MeHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ---- SessionMiddleware ------------------------------------------------
 
 // SessionMiddleware resolves the session cookie to a user_id via sessions

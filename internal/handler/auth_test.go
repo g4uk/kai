@@ -316,6 +316,58 @@ func TestLogoutHandler(t *testing.T) {
 	})
 }
 
+// ---- MeHandler ----------------------------------------------------------
+
+func TestMeHandler(t *testing.T) {
+	tests := []struct {
+		name          string
+		withCookie    bool
+		validator     SessionValidator
+		wantStatus    int
+		wantEmptyBody bool
+	}{
+		{
+			name:          "valid session returns 204 with empty body",
+			withCookie:    true,
+			validator:     stubSessionValidator{userID: 1},
+			wantStatus:    http.StatusNoContent,
+			wantEmptyBody: true,
+		},
+		{
+			name:       "missing session cookie returns 401",
+			withCookie: false,
+			validator:  stubSessionValidator{userID: 1},
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "invalid session cookie returns 401",
+			withCookie: true,
+			validator:  stubSessionValidator{err: session.ErrNotFound},
+			wantStatus: http.StatusUnauthorized,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := SessionMiddleware(&MeHandler{}, tt.validator)
+
+			req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+			if tt.withCookie {
+				req.AddCookie(&http.Cookie{Name: testSessionCookieName, Value: "sess-1"})
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status: got %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if tt.wantEmptyBody && rec.Body.String() != "" {
+				t.Errorf("body: got %q, want empty", rec.Body.String())
+			}
+		})
+	}
+}
+
 // ---- SessionMiddleware ------------------------------------------------
 
 func TestSessionMiddleware(t *testing.T) {
