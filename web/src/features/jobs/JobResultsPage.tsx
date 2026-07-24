@@ -17,11 +17,16 @@ function ParticipantSection({ participant }: { participant: Participant }) {
       ) : (
         <dl className="flex flex-col gap-1">
           {participant.metrics.map((metric) => (
-            <div key={metric.key} className="flex flex-wrap gap-2 text-sm">
-              <dt className="font-medium text-slate-600 break-words">
+            <div
+              key={metric.key}
+              className="flex min-w-0 flex-wrap gap-2 text-sm"
+            >
+              <dt className="min-w-0 break-words font-medium text-slate-600">
                 {metric.key}
               </dt>
-              <dd className="text-slate-900 break-words">{metric.value}</dd>
+              <dd className="min-w-0 break-words text-slate-900">
+                {metric.value}
+              </dd>
             </div>
           ))}
         </dl>

@@ -167,6 +167,37 @@ describe("JobResultsPage", () => {
     expect(await screen.findByText(/not found/i)).toBeInTheDocument();
   });
 
+  it("lets a long, unbroken metric key shrink and wrap instead of overflowing (criterion 13, edge case 2)", async () => {
+    getJob.mockResolvedValue(
+      baseJob({
+        status: "done",
+        participants: [
+          {
+            id: 1,
+            label: "Participant A",
+            metrics: [
+              {
+                key: "advantage_points_scored_in_extra_long_metric_name_to_test_wrapping",
+                value: 3,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    renderPage();
+
+    const dt = await screen.findByText(
+      "advantage_points_scored_in_extra_long_metric_name_to_test_wrapping",
+    );
+    // min-w-0 is the fix: without it, break-words is silently overridden by
+    // the flex item's default min-width:auto, and the long unbroken word
+    // forces the page to overflow horizontally instead of wrapping.
+    expect(dt.className).toContain("min-w-0");
+    expect(dt.className).toContain("break-words");
+  });
+
   it("renders a Log out action via the shared PageHeader for a done job (criterion 7, plan step 8)", async () => {
     getJob.mockResolvedValue(baseJob({ status: "done" }));
 

@@ -158,4 +158,13 @@ describe("router / AuthContext / ProtectedRoute", () => {
     // (the re-render from the second call may already have committed).
     await waitFor(() => expect(getAuthMe).toHaveBeenCalledTimes(2));
   });
+
+  it("renders a visible focus ring on the Log out control (criterion 1)", () => {
+    getAuthMe.mockResolvedValue(undefined);
+
+    renderApp(["/jobs"]);
+
+    const logoutButton = screen.getByRole("button", { name: /log out/i });
+    expect(logoutButton.className).toContain("focus-visible:ring");
+  });
 });

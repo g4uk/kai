@@ -104,6 +104,7 @@ export function LogoutButton() {
       onClick={() => {
         void logout();
       }}
+      className="text-sm text-blue-600 underline hover:text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-sm"
     >
       Log out
     </button>
