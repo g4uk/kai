@@ -24,7 +24,7 @@ export function EmptyState({
       {linkTo !== undefined && linkLabel !== undefined && (
         <Link
           to={linkTo}
-          className="text-sm text-blue-600 underline hover:text-blue-700"
+          className="text-sm text-blue-600 underline hover:text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-sm"
         >
           {linkLabel}
         </Link>

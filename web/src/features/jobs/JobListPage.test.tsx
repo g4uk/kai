@@ -65,6 +65,17 @@ describe("JobListPage", () => {
     }
   });
 
+  it("renders a visible focus ring on each job-row link (criterion 1)", async () => {
+    listJobs.mockResolvedValue(sampleJobs);
+
+    renderPage();
+
+    const link = await screen.findByRole("link", {
+      name: sampleJobs[0].youtube_url,
+    });
+    expect(link.className).toContain("focus-visible:ring");
+  });
+
   it("renders an empty-state CTA, not a table or a stuck spinner, for zero jobs (criterion 6, edge case 6)", async () => {
     listJobs.mockResolvedValue([]);
 

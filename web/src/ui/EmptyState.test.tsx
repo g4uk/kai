@@ -39,4 +39,22 @@ describe("EmptyState", () => {
       screen.getByRole("link", { name: "Submit your first analysis" }),
     ).toBeInTheDocument();
   });
+
+  it("renders a visible focus ring on the link (criterion 1)", () => {
+    render(
+      <MemoryRouter>
+        <EmptyState
+          heading="No analyses yet"
+          body="You have not submitted any analyses yet."
+          linkTo="/jobs/new"
+          linkLabel="Submit your first analysis"
+        />
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole("link", {
+      name: "Submit your first analysis",
+    });
+    expect(link.className).toContain("focus-visible:ring");
+  });
 });

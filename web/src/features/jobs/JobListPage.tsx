@@ -51,7 +51,7 @@ export function JobListPage() {
                 <TableCell>
                   <Link
                     to={`/jobs/${job.id}`}
-                    className="text-blue-600 underline hover:text-blue-700"
+                    className="text-blue-600 underline hover:text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-sm"
                   >
                     {job.youtube_url}
                   </Link>
