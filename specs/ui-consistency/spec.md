@@ -6,8 +6,10 @@ The four existing SPA screens (login, OTP entry, job list, new-analysis form, jo
 
 ## Scope
 
+**Deviation (resolved):** the plan changed the primitives' location from `web/src/components/` (below) to `web/src/ui/` — `.claude/skills/frontend` forbids a `components/` dumping ground; `web/src/ui/` was approved during planning as a deliberately small, named, cross-domain design-system layer instead. See `specs/ui-consistency/plan.md`'s "Conventions confirmed" section and commit `1430c33` onward for the actual location used.
+
 - Shared, hand-written UI primitives in `web/src/components/` (no new dependency) covering: primary `Button`, single-line text `Field`/`Input`, `Alert` (error/`role="alert"` display), `Table` (header/cell/row styling), `PageHeader` (title + Log out action), `EmptyState`, and a consistent loading/in-progress indicator
-- Retrofitting `LoginPage`, `OtpPage`, `JobListPage`, `NewJobPage`, and `JobResultsPage` (and `AuthContext`'s `LogoutButton`) to use these shared primitives instead of raw unstyled elements
+- Retrofitting `LoginPage`, `OtpPage`, `JobListPage`, `NewJobPage`, and `JobResultsPage` (and `AuthContext`'s `LogoutButton`) to use these shared primitives instead of raw unstyled elements — **gap (resolved):** `specs/ui-consistency/plan.md`'s Out-of-scope guard initially excluded `AuthContext.tsx`/`LogoutButton` despite this bullet naming it, so it shipped unstyled (violating acceptance criterion 1) in the first implementation pass; fixed in commit `2bb8081` after a manual browser check caught it. See `harness/evals/traces/006-ui-consistency.md`.
 - Adding the missing `PageHeader` (title + Log out) to `NewJobPage` and `JobResultsPage` so all three authenticated screens share the same shell, not just `JobListPage`
 - A centered, constrained-width card layout for the login/OTP screens (currently a left-aligned, full-bleed block)
 - Consistent Tailwind default-palette usage for semantic states: primary actions, error/`role="alert"` text, disabled controls, and focus rings — using Tailwind v4's stock color/spacing/typography scale (e.g. `slate-*`, `blue-600`, `red-600`), no custom tokens

@@ -22,7 +22,10 @@ Go · Docker Compose · MySQL · Redis · Hetzner VPS
 - Every feature starts with specs/<name>/spec.md — no spec, no code
 - spec.md/plan.md must be committed in their own commit immediately after writing, before any implementation begins — an uncommitted spec/plan file does not satisfy "no spec, no code" (recurred 3x: walking-skeleton, ui, auth-me)
 - Tests ship in the same commit as their implementation — never committed separately
-- Any deviation from an explicit spec constraint must be surfaced explicitly (commit message/PR description), never left as only an inline code comment
+- Any deviation from an explicit spec constraint must be surfaced explicitly (commit message/PR description) and noted with a brief amendment in the spec.md itself, never left as only an inline code comment or only in commit history (recurred: ui-consistency's `web/src/components/` → `web/src/ui/` path change was surfaced in the plan/commits but the spec.md kept the stale path until a later retro fixed it)
+- A plan's "Out of scope guard" must never exclude a file/component the spec's Scope section names explicitly — a plan/spec contradiction must be surfaced as a decision to the human, not resolved silently by omission (recurred: ui-consistency's plan excluded AuthContext.tsx's LogoutButton from retrofit despite the spec naming it, shipping an unstyled control that violated acceptance criterion 1 until a later manual pass caught it)
+- An acceptance criterion phrased as a universal claim across the whole surface ("any interactive element", "every screen") needs one explicit repo-wide check (grep/lint rule/manual sweep) in the plan, not just the sum of per-component tests (recurred: ui-consistency's two `<Link>` elements missed the focus-ring criterion because every test was scoped to a single component)
+- A spec's UI/visual acceptance criteria that automated tests cannot prove (focus states, responsive overflow, visual consistency) are UNVERIFIED, not READY, until a real browser pass confirms them — this blocks `/harness:verify` from returning READY, it is not an optional follow-up (recurred: ui-consistency's flexbox overflow bug shipped past a 93-test-green suite and a full harness:verify pass, caught only once someone opened a browser)
 
 ## YAGNI gate
 - Interface/abstraction — at the SECOND implementation, not before
