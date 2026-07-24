@@ -2,6 +2,11 @@ import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { createJob } from "../../api/client";
 import { isValidYoutubeUrl } from "./youtubeUrl";
+import { LogoutButton } from "../../app/AuthContext";
+import { PageHeader } from "../../ui/PageHeader";
+import { Field } from "../../ui/Field";
+import { Button } from "../../ui/Button";
+import { Alert } from "../../ui/Alert";
 
 function messageOf(err: unknown): string {
   if (err instanceof Error) {
@@ -42,21 +47,22 @@ export function NewJobPage() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <h1 className="text-xl font-semibold">Submit a new analysis</h1>
+      <PageHeader title="Submit a new analysis">
+        <LogoutButton />
+      </PageHeader>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1">
-          <span>YouTube URL</span>
-          <input
-            type="text"
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-          />
-        </label>
-        {validationError !== null && <p role="alert">{validationError}</p>}
-        {serverError !== null && <p role="alert">{serverError}</p>}
-        <button type="submit" disabled={submitting}>
+        <Field
+          label="YouTube URL"
+          type="text"
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          disabled={submitting}
+        />
+        <Alert>{validationError}</Alert>
+        <Alert>{serverError}</Alert>
+        <Button type="submit" disabled={submitting}>
           Submit
-        </button>
+        </Button>
       </form>
     </div>
   );

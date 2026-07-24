@@ -12,6 +12,9 @@ import type { Job } from "../../api/types";
 
 const { createJob } = vi.hoisted(() => ({ createJob: vi.fn() }));
 vi.mock("../../api/client", () => ({ createJob }));
+vi.mock("../../app/AuthContext", () => ({
+  LogoutButton: () => <button>Log out</button>,
+}));
 
 const createdJob: Job = {
   id: 42,
@@ -78,5 +81,13 @@ describe("NewJobPage", () => {
     expect(await screen.findByText("duplicate job")).toBeInTheDocument();
     expect(screen.getByLabelText(/youtube url/i)).toBeInTheDocument();
     expect(screen.queryByText("Job Results Screen")).not.toBeInTheDocument();
+  });
+
+  it("renders a Log out action via the shared PageHeader (criterion 7, plan step 8)", () => {
+    renderPage();
+
+    expect(
+      screen.getByRole("button", { name: /log out/i }),
+    ).toBeInTheDocument();
   });
 });

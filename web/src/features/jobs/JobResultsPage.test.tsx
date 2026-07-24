@@ -23,6 +23,9 @@ const { getJob, ApiErrorMock } = vi.hoisted(() => {
   return { getJob: vi.fn(), ApiErrorMock };
 });
 vi.mock("../../api/client", () => ({ getJob, ApiError: ApiErrorMock }));
+vi.mock("../../app/AuthContext", () => ({
+  LogoutButton: () => <button>Log out</button>,
+}));
 
 function baseJob(overrides: Partial<JobDetail>): JobDetail {
   return {
@@ -162,5 +165,15 @@ describe("JobResultsPage", () => {
     renderPage("999");
 
     expect(await screen.findByText(/not found/i)).toBeInTheDocument();
+  });
+
+  it("renders a Log out action via the shared PageHeader for a done job (criterion 7, plan step 8)", async () => {
+    getJob.mockResolvedValue(baseJob({ status: "done" }));
+
+    renderPage();
+
+    expect(
+      await screen.findByRole("button", { name: /log out/i }),
+    ).toBeInTheDocument();
   });
 });
