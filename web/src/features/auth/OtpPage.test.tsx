@@ -71,4 +71,17 @@ describe("OtpPage", () => {
     await user.click(verifyButton);
     expect(onSubmit).not.toHaveBeenCalled();
   });
+
+  it("renders inside a centered, width-constrained card layout (criterion 8, plan step 7)", () => {
+    const { container } = render(
+      <OtpPage
+        phone="+15551234567"
+        error={null}
+        isSubmitting={false}
+        onSubmit={() => {}}
+      />,
+    );
+
+    expect(container.querySelector(".max-w-sm")).not.toBeNull();
+  });
 });

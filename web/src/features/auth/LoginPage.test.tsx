@@ -124,4 +124,10 @@ describe("LoginPage", () => {
     expect(verifyOtp).toHaveBeenCalledOnce();
     resolveVerify();
   });
+
+  it("renders inside a centered, width-constrained card layout (criterion 8, plan step 7)", () => {
+    const { container } = render(<LoginPage onLoggedIn={() => {}} />);
+
+    expect(container.querySelector(".max-w-sm")).not.toBeNull();
+  });
 });

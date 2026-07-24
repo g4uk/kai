@@ -1,6 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { useOtpFlow } from "./useOtpFlow";
 import { OtpPage } from "./OtpPage";
+import { Field } from "../../ui/Field";
+import { Button } from "../../ui/Button";
+import { Alert } from "../../ui/Alert";
 
 export interface LoginPageProps {
   onLoggedIn: () => void;
@@ -46,21 +49,19 @@ export function LoginPage({ onLoggedIn }: LoginPageProps) {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="max-w-sm mx-auto flex flex-col gap-4 p-4">
       <form onSubmit={handlePhoneSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1">
-          <span>Phone number</span>
-          <input
-            type="tel"
-            value={phone}
-            onChange={(event) => setPhone(event.target.value)}
-            disabled={isSubmittingPhone}
-          />
-        </label>
-        {validationError !== null && <p role="alert">{validationError}</p>}
-        <button type="submit" disabled={isSubmittingPhone}>
+        <Field
+          label="Phone number"
+          type="tel"
+          value={phone}
+          onChange={(event) => setPhone(event.target.value)}
+          disabled={isSubmittingPhone}
+        />
+        <Alert>{validationError}</Alert>
+        <Button type="submit" disabled={isSubmittingPhone}>
           Send code
-        </button>
+        </Button>
       </form>
     </div>
   );

@@ -1,4 +1,7 @@
 import { useState, type FormEvent } from "react";
+import { Field } from "../../ui/Field";
+import { Button } from "../../ui/Button";
+import { Alert } from "../../ui/Alert";
 
 export interface OtpPageProps {
   phone: string;
@@ -25,22 +28,20 @@ export function OtpPage({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="max-w-sm mx-auto flex flex-col gap-4 p-4">
       <p>A code was sent to {phone}.</p>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1">
-          <span>Code</span>
-          <input
-            type="text"
-            value={code}
-            onChange={(event) => setCode(event.target.value)}
-            disabled={isSubmitting}
-          />
-        </label>
-        {error !== null && <p role="alert">{error}</p>}
-        <button type="submit" disabled={isSubmitting}>
+        <Field
+          label="Code"
+          type="text"
+          value={code}
+          onChange={(event) => setCode(event.target.value)}
+          disabled={isSubmitting}
+        />
+        <Alert>{error}</Alert>
+        <Button type="submit" disabled={isSubmitting}>
           Verify
-        </button>
+        </Button>
       </form>
     </div>
   );
