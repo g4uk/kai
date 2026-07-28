@@ -65,7 +65,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // reference-stable across status transitions, so the effect only re-runs
   // on a real ProtectedRoute mount (specs/session-revalidation/spec.md).
   const statusRef = useRef(status);
-  statusRef.current = status;
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   useEffect(() => {
     setOnUnauthorized(() => {

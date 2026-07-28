@@ -334,10 +334,7 @@ describe("router / AuthContext / ProtectedRoute", () => {
       screen.getByRole("button", { name: /test-forward-to-job/i }),
     );
 
-    // Give any pending effects/microtasks a chance to run.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(getAuthMe).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(getAuthMe).toHaveBeenCalledTimes(2));
 
     resolveSecond();
   });
