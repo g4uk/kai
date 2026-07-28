@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 
 /**
@@ -9,10 +9,11 @@ import { useAuth } from "./AuthContext";
  */
 export function ProtectedRoute({ children }: { children: ReactNode }) {
   const { status, ensureChecked } = useAuth();
+  const { pathname } = useLocation();
 
   useEffect(() => {
     ensureChecked();
-  }, [ensureChecked]);
+  }, [ensureChecked, pathname]);
 
   if (status === "unknown") {
     return null;

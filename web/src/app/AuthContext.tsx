@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  ApiError,
   getAuthMe,
   logout as apiLogout,
   setOnUnauthorized,
@@ -39,6 +40,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("unknown");
   const navigate = useNavigate();
   const checking = useRef(false);
+  // Mirrors `status` so `ensureChecked` can read the current value without
+  // depending on `status` in its own identity. ProtectedRoute's mount effect
+  // is keyed off `ensureChecked`'s reference (`useEffect(() => ensureChecked(),
+  // [ensureChecked])`); if `ensureChecked` were recreated every time `status`
+  // changes (e.g. right after its own probe resolves "unknown" ->
+  // "authenticated"), that effect would re-fire from the identity change
+  // alone and fire a second, spurious probe within the same mount, not just
+  // on an actual navigation/remount. Reading via ref keeps `ensureChecked`
+  // reference-stable across status transitions, so the effect only re-runs
+  // on a real ProtectedRoute mount (specs/session-revalidation/spec.md).
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   useEffect(() => {
     setOnUnauthorized(() => {
@@ -47,17 +60,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const ensureChecked = useCallback(() => {
-    if (status !== "unknown" || checking.current) {
+    if (statusRef.current === "anonymous" || checking.current) {
       return;
     }
+    const wasAuthenticated = statusRef.current === "authenticated";
     checking.current = true;
     getAuthMe()
       .then(() => setStatus("authenticated"))
-      .catch(() => setStatus("anonymous"))
+      .catch((err) => {
+        if (
+          wasAuthenticated &&
+          !(err instanceof ApiError && err.status === 401)
+        ) {
+          // Revalidation hit a non-401 failure (network hiccup, 5xx) — the
+          // session may still be valid, so don't force a logout.
+          return;
+        }
+        setStatus("anonymous");
+      })
       .finally(() => {
         checking.current = false;
       });
-  }, [status]);
+  }, []);
 
   const setAuthenticated = useCallback(() => {
     setStatus("authenticated");

@@ -58,6 +58,18 @@ function TestBackButton() {
   return <button onClick={() => navigate(-1)}>test-browser-back</button>;
 }
 
+/**
+ * Test-only helper exposing an imperative forward navigation to /jobs/123 —
+ * a stand-in for an in-app link, since AppRoutes itself has no link between
+ * /jobs and /jobs/:id (session-revalidation spec, plan.md step 1).
+ */
+function TestForwardButton() {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate("/jobs/123")}>test-forward-to-job</button>
+  );
+}
+
 function renderApp(
   initialEntries: string[],
   initialIndex = initialEntries.length - 1,
@@ -66,6 +78,7 @@ function renderApp(
     <MemoryRouter initialEntries={initialEntries} initialIndex={initialIndex}>
       <AuthProvider>
         <TestBackButton />
+        <TestForwardButton />
         <LogoutButton />
         <AppRoutes />
       </AuthProvider>
@@ -166,5 +179,166 @@ describe("router / AuthContext / ProtectedRoute", () => {
 
     const logoutButton = screen.getByRole("button", { name: /log out/i });
     expect(logoutButton.className).toContain("focus-visible:ring");
+  });
+
+  // --- session-revalidation (specs/session-revalidation/spec.md) ---
+
+  it("re-probes getAuthMe on every navigation into a protected route while authenticated (criterion 1, 4)", async () => {
+    getAuthMe.mockResolvedValue(undefined);
+    listJobs.mockResolvedValue([]);
+    getJob.mockResolvedValue({ id: "123" });
+    const user = userEvent.setup();
+
+    renderApp(["/jobs"]);
+
+    await waitFor(() =>
+      expect(screen.getByText("Job List Screen")).toBeInTheDocument(),
+    );
+    expect(getAuthMe).toHaveBeenCalledOnce();
+
+    await user.click(
+      screen.getByRole("button", { name: /test-forward-to-job/i }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Job Results Screen")).toBeInTheDocument(),
+    );
+    expect(getAuthMe).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders the destination route immediately without waiting for the revalidation probe to resolve (criterion 2, 4)", async () => {
+    getAuthMe
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => new Promise(() => {}));
+    listJobs.mockResolvedValue([]);
+    getJob.mockResolvedValue({ id: "123" });
+    const user = userEvent.setup();
+
+    renderApp(["/jobs"]);
+
+    await waitFor(() =>
+      expect(screen.getByText("Job List Screen")).toBeInTheDocument(),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /test-forward-to-job/i }),
+    );
+
+    // The second getAuthMe call never resolves, yet the destination screen
+    // still renders — proves the render is optimistic, not gated on the probe.
+    await waitFor(() =>
+      expect(screen.getByText("Job Results Screen")).toBeInTheDocument(),
+    );
+    expect(getAuthMe).toHaveBeenCalledTimes(2);
+  });
+
+  it("redirects to /login once a pending revalidation probe rejects with a 401 (criterion 3)", async () => {
+    let rejectSecond: (err: unknown) => void = () => {};
+    getAuthMe.mockResolvedValueOnce(undefined).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectSecond = reject;
+        }),
+    );
+    listJobs.mockResolvedValue([]);
+    getJob.mockResolvedValue({ id: "123" });
+    const user = userEvent.setup();
+
+    renderApp(["/jobs"]);
+
+    await waitFor(() =>
+      expect(screen.getByText("Job List Screen")).toBeInTheDocument(),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /test-forward-to-job/i }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Job Results Screen")).toBeInTheDocument(),
+    );
+
+    rejectSecond(new ApiErrorMock(401, "unauthorized"));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/phone number/i)).toBeInTheDocument(),
+    );
+  });
+
+  it.each([
+    ["a plain network error", new Error("network down")],
+    ["a 500 ApiError", new ApiErrorMock(500, "server error")],
+  ])(
+    "does not redirect to /login when the revalidation probe fails with %s, not a 401 (edge case 2)",
+    async (_label, err) => {
+      getAuthMe.mockResolvedValueOnce(undefined).mockRejectedValueOnce(err);
+      listJobs.mockResolvedValue([]);
+      getJob.mockResolvedValue({ id: "123" });
+      const user = userEvent.setup();
+
+      renderApp(["/jobs"]);
+
+      await waitFor(() =>
+        expect(screen.getByText("Job List Screen")).toBeInTheDocument(),
+      );
+
+      await user.click(
+        screen.getByRole("button", { name: /test-forward-to-job/i }),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByText("Job Results Screen")).toBeInTheDocument(),
+      );
+
+      // Let the rejected second-call promise's microtask settle.
+      await waitFor(() => expect(getAuthMe).toHaveBeenCalledTimes(2));
+
+      expect(screen.getByText("Job Results Screen")).toBeInTheDocument();
+      expect(screen.queryByLabelText(/phone number/i)).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not fire a second concurrent revalidation probe while one is still in flight (edge case 1)", async () => {
+    let resolveSecond: () => void = () => {};
+    getAuthMe.mockResolvedValueOnce(undefined).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSecond = () => resolve(undefined);
+        }),
+    );
+    listJobs.mockResolvedValue([]);
+    getJob.mockResolvedValue({ id: "123" });
+    const user = userEvent.setup();
+
+    renderApp(["/jobs"]);
+
+    await waitFor(() =>
+      expect(screen.getByText("Job List Screen")).toBeInTheDocument(),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /test-forward-to-job/i }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Job Results Screen")).toBeInTheDocument(),
+    );
+    expect(getAuthMe).toHaveBeenCalledTimes(2);
+
+    // Remount the protected route again (back, then forward) while the
+    // second probe is still outstanding.
+    await user.click(
+      screen.getByRole("button", { name: /test-browser-back/i }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /test-forward-to-job/i }),
+    );
+
+    // Give any pending effects/microtasks a chance to run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(getAuthMe).toHaveBeenCalledTimes(2);
+
+    resolveSecond();
   });
 });
