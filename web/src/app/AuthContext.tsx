@@ -19,7 +19,13 @@ export type AuthStatus = "unknown" | "authenticated" | "anonymous";
 
 interface AuthContextValue {
   status: AuthStatus;
-  /** Probes GET /auth/me once, if status is still "unknown" (called by ProtectedRoute on mount). */
+  /**
+   * Probes GET /auth/me — once for the first-load "unknown" status, and
+   * again every time ProtectedRoute calls it on a subsequent navigation
+   * while already "authenticated" (background revalidation; skipped only
+   * while "anonymous" or a probe is already in flight). See
+   * specs/session-revalidation/spec.md.
+   */
   ensureChecked: () => void;
   /** Marks the session as authenticated without re-probing (used right after OTP verify). */
   setAuthenticated: () => void;
@@ -35,6 +41,14 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  * authenticated, any error (including 401) means anonymous. Also registers
  * itself as the API client's global 401 handler so any call, anywhere, that
  * gets a 401 clears state and lets ProtectedRoute redirect.
+ *
+ * The mount-time probe is not one-shot: ProtectedRoute re-invokes
+ * `ensureChecked` on every navigation into a protected route (not just the
+ * first "unknown" load), so an already-"authenticated" session is
+ * revalidated in the background on each navigation. That revalidation only
+ * demotes status to "anonymous" on an actual 401 — a non-401 failure
+ * (network hiccup, 5xx) leaves an already-authenticated session as-is
+ * (specs/session-revalidation/spec.md).
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("unknown");
