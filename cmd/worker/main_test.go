@@ -179,3 +179,59 @@ func TestProcessTick_AdvancesPendingAndProcessingSeparately(t *testing.T) {
 		t.Errorf("processingJob status after one processTick = %q, want %q", gotProcessingStatus, "done")
 	}
 }
+
+// TestProcessTick_RedisUnavailableStillAdvancesDBStatus covers spec edge
+// case 6 ("Redis temporarily unavailable"): a failed jobevents.Publish call
+// must not stop processTick's DB write from succeeding or crash the worker.
+// Unlike TestProcessTick_AdvancesPendingAndProcessingSeparately, this test
+// is gated only on TEST_DSN (not TEST_REDIS_ADDR) — it deliberately builds a
+// *redis.Client pointed at a port nothing listens on, so the publish itself
+// is exercised and fails, rather than being skipped.
+func TestProcessTick_RedisUnavailableStillAdvancesDBStatus(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+
+	// Deliberately unreachable: nothing listens on 127.0.0.1:1. A short
+	// DialTimeout keeps the test fast instead of waiting on the client's
+	// default dial timeout.
+	unreachableRedis := redis.NewClient(&redis.Options{
+		Addr:        "127.0.0.1:1",
+		DialTimeout: 200 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = unreachableRedis.Close() })
+
+	userID := mustCreateUser(t, sqlDB, "+15559995002")
+
+	pendingJob, err := job.Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=process-tick-redis-down-1")
+	if err != nil {
+		t.Fatalf("Create pending job: %v", err)
+	}
+	cleanupJob(t, sqlDB, pendingJob.ID)
+
+	done := make(chan struct{})
+	go func() {
+		processTick(ctx, sqlDB, unreachableRedis)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// processTick returned without panicking despite Redis being down —
+		// expected.
+	case <-time.After(5 * time.Second):
+		t.Fatal("processTick did not return within 5s with Redis unavailable")
+	}
+
+	var gotStatus string
+	if err := sqlDB.QueryRowContext(ctx,
+		`SELECT status FROM analysis_jobs WHERE id = ?`, pendingJob.ID,
+	).Scan(&gotStatus); err != nil {
+		t.Fatalf("query pendingJob status: %v", err)
+	}
+
+	// The DB write must succeed independently of whether the subsequent
+	// jobevents.Publish call succeeds.
+	if gotStatus != "processing" {
+		t.Errorf("pendingJob status after processTick with Redis unavailable = %q, want %q", gotStatus, "processing")
+	}
+}
