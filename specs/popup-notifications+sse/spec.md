@@ -1,0 +1,62 @@
+# Spec: Popup Notifications + SSE
+
+## Problem
+
+Today a user submitting a video for analysis has no way to know when it finishes short of reloading the job list or results page — `specs/ui/spec.md`'s Non-scope explicitly excluded real-time updates ("job status reflects whatever the API returned at the time the page was loaded; the user must reload to see a status change"). This spec reverses that decision: it delivers job status changes to the browser in real time via Server-Sent Events (SSE) and surfaces them as a dismissible popup notification, so a user can submit a job, keep working elsewhere in the app, and be told the moment it's done or failed.
+
+**Amendment to `specs/ui/spec.md`:** its Non-scope line "Real-time status updates: no WebSockets, Server-Sent Events, or automatic polling..." is superseded by this spec for the specific case of job-status-change notification. `specs/ui/spec.md` itself is not rewritten; this note is the record of the deviation per CLAUDE.md's rule on surfacing spec amendments explicitly.
+
+## Scope
+
+- **`internal/job.UpdateStatus(ctx, db, jobID, newStatus)`** — a new repository function that writes `analysis_jobs.status` for one job (raw SQL, no ORM) and, on a successful write, publishes a message to a single Redis pub/sub channel (`job_status_updates`) with `{"job_id":..., "user_id":..., "status":...}`. Guards against no-op/invalid transitions: only `pending→processing`, `processing→done`, and `processing→failed` are accepted; any other requested transition (including `pending→done`, or re-setting a job to its current status) returns an error and publishes nothing.
+- **Worker stub progression** (`cmd/worker/main.go`) — replaces the current "worker idle" no-op ticker with logic that finds jobs still in `pending`, moves each to `processing`, waits a fixed short delay, then moves each to `done`, calling `UpdateStatus` for every transition. This is a deliberate stand-in for the real analysis pipeline (see Non-scope) — it exists only so the notification pipeline has real status changes to deliver end-to-end.
+- **`GET /jobs/stream`** — a new SSE endpoint on `cmd/api`, behind the existing `SessionMiddleware` (same as `/jobs`, `/jobs/{id}`). On connect, the api process's single existing subscription to the `job_status_updates` Redis channel (one subscription per api process, not one per open connection — see Constraints) is used to fan out matching events: for each message on that channel whose `user_id` equals the connected request's authenticated `user_id` (from `UserIDFromContext`, never a client-supplied value), the handler writes an SSE event (`event: job_status`, `data: {"job_id":...,"status":...}`) to that connection.
+- **Periodic session re-validation on the open connection** — every 60 seconds, the handler re-validates the session (reusing `session.Store.Validate`, the same store `SessionMiddleware` already uses) and closes the stream if it's no longer valid, since `SessionMiddleware` itself only runs once, at connection open, and this is a long-lived connection.
+- **`web/nginx.conf`** — add `proxy_buffering off;`, `proxy_http_version 1.1;`, and `proxy_set_header Connection "";` to the `/api/` location, required for SSE events to flush incrementally through the reverse proxy instead of being buffered until the connection closes.
+- **Frontend SSE client** — a hook (e.g. `useJobStatusEvents`) using the browser's native `EventSource` (credentialed same-origin request, so the existing `HttpOnly`/`Secure`/`SameSite=Strict` session cookie is sent automatically — no token plumbing needed) that connects to `/api/jobs/stream` while `AuthContext`'s `status === "authenticated"`, and explicitly closes the connection when `status` becomes anything else (`"anonymous"` or `"unknown"`), including on logout.
+- **New toast/popup UI primitive** — `web/src/ui/Toast.tsx` (or equivalent), following the existing primitive pattern in `web/src/ui/` (`Alert`, `EmptyState`, etc. per `specs/ui-consistency/spec.md`'s inventory): a dismissible, auto-timing-out popup showing the job's new status. Mounted once near the app root (alongside `AuthProvider`) so it can appear regardless of which screen the user is currently on.
+
+## Non-scope
+
+- **Real video/kumite analysis processing logic.** The worker's stub progression (Scope) only mechanically advances status through a fixed `pending→processing→done` sequence after a fixed delay — no video download, no frame processing, no metric computation. The real analysis pipeline is a separate future feature; this one only needs *something* to notify about.
+- **Notification history/persistence.** Popups are ephemeral, shown only to a client connected via SSE at the moment the event is published. There's no notification inbox, no "mark as read," no `notifications` table. A user not connected when a status change happens simply never sees a popup for it — they'll see the current status next time they load or navigate to the job list/results page, exactly as today.
+- **WebSockets or any client→server push channel.** SSE is one-way (server→client) only; this spec adds no bidirectional transport.
+- **Cross-tab/cross-device notification deduplication.** A user with the app open in two tabs gets the popup independently in both; no coordination to suppress duplicates.
+- **Event backfill/replay on reconnect.** Redis pub/sub is fire-and-forget, not a durable queue — a status change published while a client's connection is dropped (network blip, api restart) is not redelivered once the client reconnects. The user's next page load/navigation still shows the correct current status (unaffected — that path doesn't depend on SSE).
+- **Any change to the job list/results page's existing on-load and on-navigate fetch behavior** (`useJobs`, `specs/session-revalidation`'s revalidation). The popup is additive; those pages keep fetching on load/navigation exactly as before.
+- **Horizontal-scaling coordination beyond what Redis pub/sub already provides.** Redis pub/sub fans out to any number of subscribed api instances "for free" if the deployment ever scales; load-balancer/sticky-session concerns are out of scope, since the deployment remains a single Hetzner VPS / single api+worker instance per `docs/decisions.md` #004.
+- **Click-to-navigate from the popup to the job's results page.** The popup is informational only in this spec; clicking it does not route anywhere.
+
+## Acceptance criteria
+
+1. When a user's own job transitions status (e.g. `pending`→`processing`), then a popup notification appears in that user's browser without a page reload or navigation, showing the job's new status.
+2. When a status-change event concerns Job A only, then no popup referencing any other job appears — each event is scoped to exactly the job it concerns.
+3. When User A's job changes status while User B also has an open connection, then User B's browser never shows a popup for User A's job (server-side `user_id` filtering, not client-side).
+4. When a job transitions to a terminal status (`done` or `failed`), then the popup's text distinguishes that terminal state from an in-progress (`processing`) one.
+5. When the SSE connection drops due to a transient network interruption, then the browser reconnects automatically (native `EventSource` retry) and resumes receiving subsequent status-change events without a full page reload.
+6. When a user logs out, then the frontend explicitly closes its open SSE connection (verifiable: no outstanding `/jobs/stream` request after `logout()` resolves).
+7. When a user's session is invalidated while their SSE connection is open (e.g. logout from another tab, or TTL expiry), then the backend's periodic re-validation closes that connection within 60 seconds.
+8. When the worker's stub progression moves a job through `pending`→`processing`→`done`, then each transition produces its own separate SSE event — the intermediate `processing` event is not skipped or coalesced into a single final event.
+9. When `docker compose up --build` runs, then SSE events sent by the api are observed arriving incrementally at the client through the `web` nginx proxy, not held back and delivered all at once when the connection eventually closes.
+10. When an unauthenticated request is made to `GET /jobs/stream`, then it returns `401` and no event stream is opened, consistent with `SessionMiddleware`'s existing behavior on every other protected route.
+11. When `UpdateStatus` is called with a transition other than `pending→processing`, `processing→done`, or `processing→failed` (e.g. `pending→done`, or the job's current status again), then it returns an error, the row is not written, and no Redis message is published.
+
+## Edge cases
+
+1. **Cross-user isolation (the multi-tenant "foreign job" case for this spec)** — a status-change event for User A's job must never reach User B's connection; covered by criterion 3. Filtering happens server-side against the authenticated `user_id` from `SessionMiddleware`'s context, never a client-supplied identifier.
+2. **User has zero jobs, or no job currently changing status, while connected** — the SSE connection stays open (200, headers flushed, no data yet) and simply receives no events; it must not error, time out, or 404 just because nothing has happened yet.
+3. **Same user, two open tabs** — each tab holds its own SSE connection; a single published event is delivered to both independently (both connections are subscribed to the same in-process fan-out for that `user_id`), and neither connection errors because of the other.
+4. **Api process restarts while a connection is open** — the connection drops; per criterion 5 the client auto-reconnects. Per Non-scope, any status change published during the gap between drop and reconnect is not backfilled — the user simply doesn't see a popup for it, but sees the correct status on their next page view.
+5. **Job created and transitions before any SSE connection for that user ever existed** (e.g., user submits then immediately closes the tab) — no popup is shown to anyone; this is expected given notifications are not persisted (Non-scope), not a bug to fix.
+6. **Redis temporarily unavailable** — a failed publish from `UpdateStatus` or a failed/dropped subscription on the api side must not crash either process or block unrelated functionality: job creation, listing, and detail-fetch (none of which depend on Redis pub/sub) keep working; only the notification path degrades (no events delivered until Redis recovers).
+7. **`UpdateStatus` called concurrently for the same job** (e.g. a retry or a race in a future scheduler) — the second call attempting the same already-applied transition (e.g. `processing→done` twice) must be rejected as a no-op per criterion 11, not double-publish a duplicate event.
+
+## Constraints
+
+- Security: `GET /jobs/stream` is scoped identically to `GET /jobs` and `GET /jobs/{id}` — the `user_id` used to filter events comes only from `SessionMiddleware`'s context, per CLAUDE.md's hard rule that every handler verifies resource ownership.
+- Security: the SSE handler re-validates its session every 60 seconds via the existing `session.Store.Validate` and closes the stream on invalidation — a server-side analog to the client-side work in `specs/session-revalidation`, needed because `SessionMiddleware` itself validates only once, at connection open, and this connection is long-lived.
+- Architecture: the api process holds exactly one Redis subscription to the `job_status_updates` channel (not one per open SSE connection), fanning out in-process to whichever open connections match each message's `user_id` — avoids N Redis subscriptions for N concurrently open browser tabs/users.
+- Compatibility: no ORM — `UpdateStatus` uses raw SQL via `database/sql`, consistent with the rest of `internal/job`.
+- Compatibility: `web/nginx.conf`'s `/api/` location must disable proxy buffering (required fix, not optional — SSE does not function through the current config at all).
+- Dependencies: reuses Redis only, already present per `docs/decisions.md` #002 — no new Docker Compose service, no new client library, per the explicit "Redis, not RabbitMQ" decision made when scoping this feature.
+- Deployment: must work correctly on the single Hetzner VPS / single api+worker instance topology of `docs/decisions.md` #004; the design (Redis pub/sub fan-in, per-process fan-out) also happens to be correct if ever scaled to multiple api instances, but multi-instance behavior is not tested as part of this spec.
