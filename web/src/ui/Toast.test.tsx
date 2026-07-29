@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, renderHook } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  renderHook,
+  act,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ToastProvider, useToast } from "./Toast";
 
@@ -50,7 +56,9 @@ describe("Toast", () => {
     fireEvent.click(screen.getByRole("button", { name: "add-toast" }));
     expect(screen.getByText("Job done")).toBeInTheDocument();
 
-    vi.advanceTimersByTime(AUTO_DISMISS_MS);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_DISMISS_MS);
+    });
 
     expect(screen.queryByText("Job done")).not.toBeInTheDocument();
   });

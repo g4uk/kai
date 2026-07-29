@@ -6,7 +6,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { flushSync } from "react-dom";
 
 /** Auto-dismiss duration for a toast, in milliseconds (Toast.test.tsx is the source of truth). */
 const AUTO_DISMISS_MS = 5000;
@@ -40,13 +39,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       const id = nextId.current++;
       setToasts((current) => [...current, { id, message }]);
       setTimeout(() => {
-        // flushSync forces the removal to apply synchronously so a test
-        // driving this timer with fake timers (vi.advanceTimersByTime, not
-        // wrapped in act()) can assert on the DOM immediately afterwards,
-        // without waiting for React's normal-priority scheduler to flush.
-        flushSync(() => {
-          removeToast(id);
-        });
+        removeToast(id);
       }, AUTO_DISMISS_MS);
     },
     [removeToast],
