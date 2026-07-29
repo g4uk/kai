@@ -130,6 +130,13 @@ func TestJobStreamHandler_DeliversEvent(t *testing.T) {
 		t.Fatal("ServeHTTP did not return within 1s after context cancellation")
 	}
 
+	if rec.Code != http.StatusOK {
+		t.Errorf("status: got %d, want %d", rec.Code, http.StatusOK)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type: got %q, want %q", ct, "text/event-stream")
+	}
+
 	body := rec.Body.String()
 	if !strings.Contains(body, "event: job_status") {
 		t.Errorf("body = %q, want it to contain %q", body, "event: job_status")
