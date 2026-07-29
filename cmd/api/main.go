@@ -14,11 +14,17 @@ import (
 	"github.com/g4uk/kai/internal/db"
 	"github.com/g4uk/kai/internal/handler"
 	"github.com/g4uk/kai/internal/job"
+	"github.com/g4uk/kai/internal/jobevents"
 	"github.com/g4uk/kai/internal/otp"
 	"github.com/g4uk/kai/internal/redisconn"
 	"github.com/g4uk/kai/internal/session"
 	"github.com/g4uk/kai/internal/user"
 )
+
+// jobStreamRevalidateInterval controls how often JobStreamHandler
+// re-validates an open SSE connection's session, per
+// specs/popup-notifications+sse/spec.md's Constraints.
+const jobStreamRevalidateInterval = 60 * time.Second
 
 // Concrete auth values per specs/user-auth/plan.md: session TTL = 30 days;
 // OTP TTL = 5 min; OTP request limit = 5/hour/phone; OTP verify attempt
@@ -139,6 +145,7 @@ func buildServer(
 	sessionValidator handler.SessionValidator,
 	users handler.UserFinder,
 	jobs jobStoreDeps,
+	jobEvents handler.JobEventSubscriber,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", &handler.HealthHandler{DB: database, Redis: redisConn})
@@ -155,6 +162,11 @@ func buildServer(
 	mux.Handle("POST /jobs", handler.SessionMiddleware(&handler.CreateJobHandler{Jobs: jobs}, sessionValidator))
 	mux.Handle("GET /jobs", handler.SessionMiddleware(&handler.ListJobsHandler{Jobs: jobs}, sessionValidator))
 	mux.Handle("GET /jobs/{id}", handler.SessionMiddleware(&handler.GetJobHandler{Jobs: jobs}, sessionValidator))
+	mux.Handle("GET /jobs/stream", handler.SessionMiddleware(&handler.JobStreamHandler{
+		Events:             jobEvents,
+		Sessions:           sessionValidator,
+		RevalidateInterval: jobStreamRevalidateInterval,
+	}, sessionValidator))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
@@ -201,12 +213,22 @@ func main() {
 	users := &userFinder{db: sqlDB}
 	jobs := &jobStore{db: sqlDB}
 
+	broadcaster := &jobevents.Broadcaster{}
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	go func() {
+		if err := broadcaster.Run(runCtx, redisClient); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("job events broadcaster stopped", "err", err)
+		}
+	}()
+
 	mux := buildServer(
 		&dbPinger{db: sqlDB}, &redisPinger{c: redisClient},
 		otpService, otpService,
 		sessionStore, sessionStore, sessionStore,
 		users,
 		jobs,
+		broadcaster,
 	)
 
 	slog.Info("starting api", "port", port)

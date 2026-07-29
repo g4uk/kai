@@ -17,9 +17,11 @@ func (stubPinger) Ping(_ context.Context) error { return nil }
 func TestBuildServer_NoPanic(t *testing.T) {
 	// buildServer's signature grew in specs/user-auth/plan.md step 6 to also
 	// accept the auth dependencies (see TestBuildServer_RegistersAuthRoutes
-	// below), and again in specs/jobs-api/plan.md step 3 to accept the jobs
-	// dependency (see TestBuildServer_RegistersJobRoutes below); this call
-	// site is updated to match so all three tests compile against the one
+	// below), again in specs/jobs-api/plan.md step 3 to accept the jobs
+	// dependency (see TestBuildServer_RegistersJobRoutes below), and again in
+	// specs/popup-notifications+sse/plan.md step 4 to accept a job-events
+	// subscriber (see TestBuildServer_RegistersJobStreamRoute below); this
+	// call site is updated to match so all tests compile against the one
 	// buildServer signature.
 	mux := buildServer(
 		stubPinger{}, stubPinger{},
@@ -27,6 +29,7 @@ func TestBuildServer_NoPanic(t *testing.T) {
 		stubAuthSessionCreator{}, stubAuthSessionDeleter{}, stubAuthSessionValidator{},
 		stubAuthUserFinder{},
 		stubJobStore{},
+		stubJobEventSubscriber{},
 	)
 	if mux == nil {
 		t.Fatal("buildServer returned nil mux")
@@ -90,6 +93,7 @@ func TestBuildServer_RegistersAuthRoutes(t *testing.T) {
 		stubAuthSessionCreator{}, stubAuthSessionDeleter{}, stubAuthSessionValidator{},
 		stubAuthUserFinder{},
 		stubJobStore{},
+		stubJobEventSubscriber{},
 	)
 	if mux == nil {
 		t.Fatal("buildServer returned nil mux")
@@ -173,6 +177,32 @@ type stubJobStore struct {
 	stubJobGetter
 }
 
+// ----------------------------------------------------------------------------
+// TDD RED PHASE NOTE (specs/popup-notifications+sse/plan.md step 4)
+//
+// buildServer's signature must grow again to accept one job-events
+// subscriber dependency so it can register GET /jobs/stream, wrapped in
+// handler.SessionMiddleware (mirroring how the job routes above prove
+// SessionMiddleware wraps them via a 401-without-cookie assertion). This test
+// documents the assumption it needs to compile against: buildServer gains
+// ONE additional positional parameter, after the existing jobs-store-shaped
+// one, typed to accept a value satisfying the not-yet-existing
+// handler.JobEventSubscriber interface (internal/handler/jobs_stream.go,
+// specs/popup-notifications+sse/plan.md step 3). If the implementer instead
+// inserts the parameter elsewhere in the list, only this file's call sites
+// need to change.
+// ----------------------------------------------------------------------------
+
+// stubJobEventSubscriber is a no-op handler.JobEventSubscriber-shaped stub:
+// its channel is never written to by these route-registration tests (they
+// only assert on status codes, not on delivered events — event-delivery
+// behavior itself is covered by internal/handler/jobs_stream_test.go).
+type stubJobEventSubscriber struct{}
+
+func (stubJobEventSubscriber) Subscribe(_ uint64) (<-chan []byte, func()) {
+	return make(chan []byte), func() {}
+}
+
 const testJobsSessionCookieName = "session_id"
 
 // ----------------------------------------------------------------------------
@@ -191,6 +221,7 @@ func TestBuildServer_RegistersAuthMeRoute(t *testing.T) {
 		stubAuthSessionCreator{}, stubAuthSessionDeleter{}, stubAuthSessionValidator{},
 		stubAuthUserFinder{},
 		stubJobStore{},
+		stubJobEventSubscriber{},
 	)
 	if mux == nil {
 		t.Fatal("buildServer returned nil mux")
@@ -225,6 +256,7 @@ func TestBuildServer_RegistersJobRoutes(t *testing.T) {
 		stubAuthSessionCreator{}, stubAuthSessionDeleter{}, stubAuthSessionValidator{},
 		stubAuthUserFinder{},
 		stubJobStore{},
+		stubJobEventSubscriber{},
 	)
 	if mux == nil {
 		t.Fatal("buildServer returned nil mux")
@@ -260,5 +292,27 @@ func TestBuildServer_RegistersJobRoutes(t *testing.T) {
 				t.Errorf("%s %s without session cookie: got %d, want %d (proving SessionMiddleware wraps this route)", rt.method, rt.path, rec.Code, http.StatusUnauthorized)
 			}
 		})
+	}
+}
+
+func TestBuildServer_RegistersJobStreamRoute(t *testing.T) {
+	mux := buildServer(
+		stubPinger{}, stubPinger{},
+		stubAuthOTPRequester{}, stubAuthOTPVerifier{},
+		stubAuthSessionCreator{}, stubAuthSessionDeleter{}, stubAuthSessionValidator{},
+		stubAuthUserFinder{},
+		stubJobStore{},
+		stubJobEventSubscriber{},
+	)
+	if mux == nil {
+		t.Fatal("buildServer returned nil mux")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs/stream", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("GET /jobs/stream without session cookie: got %d, want %d (proving SessionMiddleware wraps this route, per spec criterion 10)", rec.Code, http.StatusUnauthorized)
 	}
 }
