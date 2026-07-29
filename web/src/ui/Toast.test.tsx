@@ -80,10 +80,10 @@ describe("Toast", () => {
       </ToastProvider>,
     );
 
-    await user.click(screen.getByRole("button", { name: "add-toast" }));
-    // Two buttons now share the same accessible name; grab all and click the
-    // second to add the second toast.
+    // Both buttons share the accessible name "add-toast" from the moment
+    // they mount, so getByRole would throw; grab all and click by index.
     const addButtons = screen.getAllByRole("button", { name: "add-toast" });
+    await user.click(addButtons[0]);
     await user.click(addButtons[1]);
 
     expect(screen.getByText("Job 1 done")).toBeInTheDocument();
