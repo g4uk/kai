@@ -124,5 +124,26 @@ describe("App", () => {
         expect(screen.getByText(/done/i)).toBeInTheDocument(),
       );
     });
+
+    // Review fix (minor #6): both ProtectedRoute (router.tsx) and
+    // JobStatusNotifier (App.tsx, via useJobStatusEvents) call
+    // ensureChecked() once a protected route is mounted alongside the app
+    // root — proves AuthContext.tsx's `checking.current` in-flight guard
+    // still dedupes them into a single GET /auth/me call, matching the
+    // pattern of router.test.tsx's criterion-1 "exactly once" assertion.
+    it("calls getAuthMe exactly once on initial load of a protected route, even though both ProtectedRoute and JobStatusNotifier call ensureChecked", async () => {
+      getAuthMe.mockResolvedValue(undefined);
+      listJobs.mockResolvedValue([]);
+      window.history.pushState({}, "", "/jobs");
+
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByText("Jobs")).toBeInTheDocument());
+      await waitFor(() =>
+        expect(MockEventSource.instances.length).toBeGreaterThan(0),
+      );
+
+      expect(getAuthMe).toHaveBeenCalledOnce();
+    });
   });
 });
