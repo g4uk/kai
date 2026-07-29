@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 
@@ -12,7 +12,7 @@ import App from "./App";
 // MemoryRouter, no manual AuthProvider wiring) to prove App.tsx really
 // composes BrowserRouter + AuthProvider + AppRoutes end-to-end.
 
-const { getAuthMe, ApiErrorMock } = vi.hoisted(() => {
+const { getAuthMe, listJobs, ApiErrorMock } = vi.hoisted(() => {
   class ApiErrorMock extends Error {
     status: number;
     constructor(status: number, message: string) {
@@ -21,11 +21,11 @@ const { getAuthMe, ApiErrorMock } = vi.hoisted(() => {
       this.name = "ApiError";
     }
   }
-  return { getAuthMe: vi.fn(), ApiErrorMock };
+  return { getAuthMe: vi.fn(), listJobs: vi.fn(), ApiErrorMock };
 });
 
 vi.mock("./api/client", () => ({
-  listJobs: vi.fn(),
+  listJobs,
   getJob: vi.fn(),
   getAuthMe,
   requestOtp: vi.fn(),
@@ -36,9 +36,48 @@ vi.mock("./api/client", () => ({
   ApiError: ApiErrorMock,
 }));
 
+// specs/popup-notifications+sse/spec.md: jsdom has no native EventSource
+// (plan.md's top-of-file risk note) — stub a minimal test-local mock class
+// that records constructor calls and lets the test manually fire a
+// job_status message.
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+  url: string;
+  private listeners: Record<string, Array<(event: { data: string }) => void>> =
+    {};
+
+  constructor(url: string) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+  }
+
+  addEventListener(
+    type: string,
+    handler: (event: { data: string }) => void,
+  ): void {
+    (this.listeners[type] ??= []).push(handler);
+  }
+
+  removeEventListener(): void {
+    // not exercised by these tests
+  }
+
+  close(): void {
+    // not exercised by these tests
+  }
+
+  dispatch(type: string, data: unknown): void {
+    const event = { data: JSON.stringify(data) };
+    for (const handler of this.listeners[type] ?? []) {
+      handler(event);
+    }
+  }
+}
+
 describe("App", () => {
   beforeEach(() => {
     getAuthMe.mockReset();
+    listJobs.mockReset();
     window.history.pushState({}, "", "/");
   });
 
@@ -50,5 +89,40 @@ describe("App", () => {
     await waitFor(() =>
       expect(screen.getByLabelText(/phone number/i)).toBeInTheDocument(),
     );
+  });
+
+  // specs/popup-notifications+sse/spec.md, plan.md step 7: proves App.tsx
+  // actually wires ToastProvider + the SSE hook (useJobStatusEvents) +
+  // AppRoutes together — a job_status event fired on the app-constructed
+  // EventSource must produce a visible toast somewhere in the rendered app
+  // shell, not just in the hook's own isolated test.
+  describe("popup notifications wiring", () => {
+    beforeEach(() => {
+      MockEventSource.instances = [];
+      vi.stubGlobal("EventSource", MockEventSource);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("shows a toast when a job_status SSE event arrives, proving ToastProvider + useJobStatusEvents are wired into the real app shell", async () => {
+      getAuthMe.mockResolvedValue(undefined);
+      listJobs.mockResolvedValue([]);
+
+      render(<App />);
+
+      await waitFor(() =>
+        expect(MockEventSource.instances.length).toBeGreaterThan(0),
+      );
+      const source = MockEventSource.instances[0];
+      expect(source.url).toBe("/api/jobs/stream");
+
+      source.dispatch("job_status", { job_id: 1, status: "done" });
+
+      await waitFor(() =>
+        expect(screen.getByText(/done/i)).toBeInTheDocument(),
+      );
+    });
   });
 });
