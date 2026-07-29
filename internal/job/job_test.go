@@ -471,6 +471,280 @@ func TestGetByID_NotFound(t *testing.T) {
 	}
 }
 
+// ----------------------------------------------------------------------------
+// TDD RED PHASE NOTE (specs/popup-notifications+sse/plan.md step 1)
+//
+// The tests below drive not-yet-existing additions to internal/job/job.go.
+// Until job.go defines the following, this package fails to compile
+// (expected, correct red state):
+//
+//	var ErrInvalidTransition error
+//
+//	func UpdateStatus(ctx context.Context, db *sql.DB, jobID uint64, newStatus string) (Job, error)
+//	func ListByStatus(ctx context.Context, db *sql.DB, status string) ([]Job, error)
+//
+// UpdateStatus mirrors Create's SELECT ... FOR UPDATE-then-write transaction
+// pattern: only pending->processing, processing->done and processing->failed
+// are accepted transitions (per plan.md's validTransitions map); any other
+// requested transition — including re-setting a job to its current status —
+// must return ErrInvalidTransition without writing the row. A jobID with no
+// matching row returns ErrNotFound (the same sentinel GetByID already uses).
+//
+// ListByStatus has no user_id filter by design (plan.md step 1: "a
+// worker-internal query, not exposed through any handler").
+// ----------------------------------------------------------------------------
+
+// mustSetJobStatus force-sets a job's status directly via SQL, bypassing
+// UpdateStatus's transition guard, so tests can seed a job into a status
+// Create() itself can't produce (mirrors
+// TestCreate_AfterFailedAllowsResubmission's inline pattern above).
+func mustSetJobStatus(t *testing.T, sqlDB *sql.DB, jobID uint64, status string) {
+	t.Helper()
+
+	if _, err := sqlDB.ExecContext(context.Background(),
+		`UPDATE analysis_jobs SET status = ? WHERE id = ?`, status, jobID,
+	); err != nil {
+		t.Fatalf("mustSetJobStatus(%d, %q): %v", jobID, status, err)
+	}
+}
+
+// currentJobStatus reads a job's status directly via SQL, independent of any
+// UpdateStatus/GetByID behavior under test.
+func currentJobStatus(t *testing.T, sqlDB *sql.DB, jobID uint64) string {
+	t.Helper()
+
+	var status string
+	if err := sqlDB.QueryRowContext(context.Background(),
+		`SELECT status FROM analysis_jobs WHERE id = ?`, jobID,
+	).Scan(&status); err != nil {
+		t.Fatalf("currentJobStatus(%d): %v", jobID, err)
+	}
+	return status
+}
+
+// ---- UpdateStatus -------------------------------------------------------
+
+func TestUpdateStatus_PendingToProcessing(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559994001")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=update-status-p2p-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+
+	updated, err := UpdateStatus(ctx, sqlDB, j.ID, "processing")
+	if err != nil {
+		t.Fatalf("UpdateStatus(pending->processing): %v", err)
+	}
+	if updated.Status != "processing" {
+		t.Errorf("updated.Status = %q, want %q", updated.Status, "processing")
+	}
+	if updated.ID != j.ID {
+		t.Errorf("updated.ID = %d, want %d", updated.ID, j.ID)
+	}
+	if updated.UserID != userID {
+		t.Errorf("updated.UserID = %d, want %d", updated.UserID, userID)
+	}
+
+	if got := currentJobStatus(t, sqlDB, j.ID); got != "processing" {
+		t.Errorf("persisted status = %q, want %q", got, "processing")
+	}
+}
+
+func TestUpdateStatus_ProcessingToDone(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559994002")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=update-status-p2d-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+	mustSetJobStatus(t, sqlDB, j.ID, "processing")
+
+	updated, err := UpdateStatus(ctx, sqlDB, j.ID, "done")
+	if err != nil {
+		t.Fatalf("UpdateStatus(processing->done): %v", err)
+	}
+	if updated.Status != "done" {
+		t.Errorf("updated.Status = %q, want %q", updated.Status, "done")
+	}
+	if got := currentJobStatus(t, sqlDB, j.ID); got != "done" {
+		t.Errorf("persisted status = %q, want %q", got, "done")
+	}
+}
+
+func TestUpdateStatus_ProcessingToFailed(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559994003")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=update-status-p2f-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+	mustSetJobStatus(t, sqlDB, j.ID, "processing")
+
+	updated, err := UpdateStatus(ctx, sqlDB, j.ID, "failed")
+	if err != nil {
+		t.Fatalf("UpdateStatus(processing->failed): %v", err)
+	}
+	if updated.Status != "failed" {
+		t.Errorf("updated.Status = %q, want %q", updated.Status, "failed")
+	}
+	if got := currentJobStatus(t, sqlDB, j.ID); got != "failed" {
+		t.Errorf("persisted status = %q, want %q", got, "failed")
+	}
+}
+
+func TestUpdateStatus_RejectsPendingToDone(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559994004")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=update-status-reject-p2d-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+
+	_, err = UpdateStatus(ctx, sqlDB, j.ID, "done")
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("UpdateStatus(pending->done): got err %v, want ErrInvalidTransition", err)
+	}
+
+	if got := currentJobStatus(t, sqlDB, j.ID); got != "pending" {
+		t.Errorf("persisted status after rejected transition = %q, want unchanged %q", got, "pending")
+	}
+}
+
+func TestUpdateStatus_RejectsSameStatus(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559994005")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=update-status-reject-same-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+	mustSetJobStatus(t, sqlDB, j.ID, "processing")
+
+	_, err = UpdateStatus(ctx, sqlDB, j.ID, "processing")
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("UpdateStatus(processing->processing): got err %v, want ErrInvalidTransition", err)
+	}
+
+	if got := currentJobStatus(t, sqlDB, j.ID); got != "processing" {
+		t.Errorf("persisted status after rejected no-op transition = %q, want unchanged %q", got, "processing")
+	}
+}
+
+func TestUpdateStatus_NotFound(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+
+	_, err := UpdateStatus(ctx, sqlDB, 999999999, "processing")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateStatus for nonexistent job id: got err %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateStatus_RejectsSecondTransitionAfterFirstApplied(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559994006")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=update-status-double-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+	mustSetJobStatus(t, sqlDB, j.ID, "processing")
+
+	if _, err := UpdateStatus(ctx, sqlDB, j.ID, "done"); err != nil {
+		t.Fatalf("first UpdateStatus(processing->done): %v", err)
+	}
+
+	// The job is now 'done'; a second processing->done call must be rejected
+	// (edge case 7: concurrent/retried transitions must not double-apply).
+	_, err = UpdateStatus(ctx, sqlDB, j.ID, "done")
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("second UpdateStatus(processing->done) on an already-done job: got err %v, want ErrInvalidTransition", err)
+	}
+
+	if got := currentJobStatus(t, sqlDB, j.ID); got != "done" {
+		t.Errorf("persisted status after rejected second transition = %q, want unchanged %q", got, "done")
+	}
+}
+
+// ---- ListByStatus ---------------------------------------------------------
+
+func TestListByStatus_AcrossUsers(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userA := mustCreateUser(t, sqlDB, "+15559994007")
+	userB := mustCreateUser(t, sqlDB, "+15559994008")
+
+	jobA, err := Create(ctx, sqlDB, userA, "https://www.youtube.com/watch?v=list-by-status-a-1")
+	if err != nil {
+		t.Fatalf("Create jobA: %v", err)
+	}
+	cleanupJob(t, sqlDB, jobA.ID)
+	mustSetJobStatus(t, sqlDB, jobA.ID, "processing")
+
+	jobB, err := Create(ctx, sqlDB, userB, "https://www.youtube.com/watch?v=list-by-status-b-1")
+	if err != nil {
+		t.Fatalf("Create jobB: %v", err)
+	}
+	cleanupJob(t, sqlDB, jobB.ID)
+	mustSetJobStatus(t, sqlDB, jobB.ID, "processing")
+
+	got, err := ListByStatus(ctx, sqlDB, "processing")
+	if err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+
+	foundA, foundB := false, false
+	for _, j := range got {
+		if j.ID == jobA.ID {
+			foundA = true
+		}
+		if j.ID == jobB.ID {
+			foundB = true
+		}
+	}
+	if !foundA {
+		t.Error("ListByStatus(\"processing\") did not include userA's job")
+	}
+	if !foundB {
+		t.Error("ListByStatus(\"processing\") did not include userB's job (proves no user_id filtering)")
+	}
+}
+
+func TestListByStatus_Empty(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+
+	// A status value no test in this file ever assigns to a real row, so this
+	// is expected to come back empty regardless of parallel test state.
+	got, err := ListByStatus(ctx, sqlDB, "no-such-status-list-by-status-empty")
+	if err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+	if got == nil {
+		t.Error("ListByStatus with no matching rows returned nil, want non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("len(got) = %d, want 0", len(got))
+	}
+}
+
 func TestGetByID_ForeignTenant(t *testing.T) {
 	sqlDB := testDB(t)
 	ctx := context.Background()

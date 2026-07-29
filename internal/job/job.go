@@ -18,6 +18,19 @@ var ErrNotFound = errors.New("job: not found")
 // job for the same youtube_url.
 var ErrDuplicate = errors.New("job: duplicate submission")
 
+// ErrInvalidTransition is returned by UpdateStatus when the requested
+// newStatus is not a valid transition from the job's current status (per
+// validTransitions), including re-setting a job to its current status.
+var ErrInvalidTransition = errors.New("job: invalid status transition")
+
+// validTransitions enumerates the only allowed status transitions.
+// Anything not listed here (including a no-op like "processing"->"processing")
+// is rejected by UpdateStatus with ErrInvalidTransition.
+var validTransitions = map[string][]string{
+	"pending":    {"processing"},
+	"processing": {"done", "failed"},
+}
+
 // Job mirrors a row in the analysis_jobs table.
 type Job struct {
 	ID         uint64
@@ -104,6 +117,66 @@ func Create(ctx context.Context, db *sql.DB, userID uint64, youtubeURL string) (
 	return created, nil
 }
 
+// UpdateStatus transitions jobID's status to newStatus, mirroring Create's
+// SELECT ... FOR UPDATE-then-write transaction pattern. It returns
+// ErrNotFound if no job with jobID exists, or ErrInvalidTransition if
+// newStatus is not a valid transition from the job's current status (per
+// validTransitions) — including re-setting a job to its current status. On
+// success it returns the full updated Job (so callers, e.g. the worker, have
+// UserID available for publishing without a second query).
+func UpdateStatus(ctx context.Context, db *sql.DB, jobID uint64, newStatus string) (Job, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, fmt.Errorf("job update status: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var currentStatus string
+	err = tx.QueryRowContext(ctx,
+		`SELECT status FROM analysis_jobs WHERE id = ? FOR UPDATE`,
+		jobID,
+	).Scan(&currentStatus)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return Job{}, fmt.Errorf("job update status: %w", ErrNotFound)
+	case err != nil:
+		return Job{}, fmt.Errorf("job update status: select: %w", err)
+	}
+
+	allowed := false
+	for _, s := range validTransitions[currentStatus] {
+		if s == newStatus {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return Job{}, fmt.Errorf("job update status: %s -> %s: %w", currentStatus, newStatus, ErrInvalidTransition)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE analysis_jobs SET status = ? WHERE id = ?`,
+		newStatus, jobID,
+	); err != nil {
+		return Job{}, fmt.Errorf("job update status: update: %w", err)
+	}
+
+	var updated Job
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, user_id, youtube_url, status, created_at, updated_at FROM analysis_jobs WHERE id = ?`,
+		jobID,
+	).Scan(&updated.ID, &updated.UserID, &updated.YoutubeURL, &updated.Status, &updated.CreatedAt, &updated.UpdatedAt)
+	if err != nil {
+		return Job{}, fmt.Errorf("job update status: reload: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Job{}, fmt.Errorf("job update status: commit: %w", err)
+	}
+
+	return updated, nil
+}
+
 // ListByUser returns all of userID's jobs, newest-first by created_at. It
 // always returns a non-nil slice, even when the user has no jobs.
 func ListByUser(ctx context.Context, db *sql.DB, userID uint64) ([]Job, error) {
@@ -126,6 +199,37 @@ func ListByUser(ctx context.Context, db *sql.DB, userID uint64) ([]Job, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("job list by user: rows: %w", err)
+	}
+
+	return jobs, nil
+}
+
+// ListByStatus returns all jobs currently in status, newest-first by
+// created_at. Unlike ListByUser, it applies no user_id filter — this is a
+// worker-internal query (used to find jobs to advance through the pipeline
+// across all users) and is not exposed through any handler, so it does not
+// fall under CLAUDE.md's per-handler user_id-ownership rule. It always
+// returns a non-nil slice, even when no jobs match.
+func ListByStatus(ctx context.Context, db *sql.DB, status string) ([]Job, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, user_id, youtube_url, status, created_at, updated_at FROM analysis_jobs WHERE status = ? ORDER BY created_at DESC`,
+		status,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("job list by status: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	jobs := []Job{}
+	for rows.Next() {
+		var j Job
+		if err := rows.Scan(&j.ID, &j.UserID, &j.YoutubeURL, &j.Status, &j.CreatedAt, &j.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("job list by status: scan: %w", err)
+		}
+		jobs = append(jobs, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("job list by status: rows: %w", err)
 	}
 
 	return jobs, nil
