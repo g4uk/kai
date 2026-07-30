@@ -151,12 +151,27 @@ for TRACE in "$REPO"/harness/evals/traces/*.md; do
   # Stage the agent's output: it isn't expected to commit, but checks that use
   # git-aware tools (git grep, git diff --cached) must see its new/changed files.
   run_check "$WT" "git add -A" >/dev/null 2>&1
-  run_check "$WT" "$BASE_CHECK" >/dev/null 2>&1 || { OK=0; echo "  - FAIL: base check" | tee -a "$RESULTS"; }
+  # A FAIL with no diagnostic is a dead end — a docker-compose/mysql check
+  # that fails in CI gives no way to tell "build error" from "migration
+  # never ran" from "port conflict" apart, at exactly the point someone
+  # needs to know. Same reasoning as the agent's own RAW OUTPUT surfacing
+  # above, applied to check output: capture it, print the tail (where a
+  # build/test failure's actual reason usually is) on FAIL, capped so one
+  # noisy check can't drown the results file.
+  if ! CHECK_OUT=$(run_check "$WT" "$BASE_CHECK" 2>&1); then
+    OK=0
+    echo "  - FAIL: base check" | tee -a "$RESULTS"
+    echo "$CHECK_OUT" | tail -c 2000 | tee -a "$RESULTS"
+  fi
 
   # BSD/GNU-portable extraction of "- [ ] cmd: <shell>" checks (no grep -P)
   while IFS= read -r CHECK; do
     [ -z "$CHECK" ] && continue
-    run_check "$WT" "$CHECK" >/dev/null 2>&1 || { OK=0; echo "  - FAIL check: $CHECK" | tee -a "$RESULTS"; }
+    if ! CHECK_OUT=$(run_check "$WT" "$CHECK" 2>&1); then
+      OK=0
+      echo "  - FAIL check: $CHECK" | tee -a "$RESULTS"
+      echo "$CHECK_OUT" | tail -c 2000 | tee -a "$RESULTS"
+    fi
   done < <(sed -n 's/^[[:space:]]*-[[:space:]]*\[[[:space:]]*\][[:space:]]*cmd:[[:space:]]*//p' "$TRACE")
 
   if [ "$OK" = 1 ]; then echo "- $NAME: PASS" | tee -a "$RESULTS"; PASS=$((PASS+1));
