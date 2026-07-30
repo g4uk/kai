@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -15,47 +16,111 @@ import (
 	"github.com/g4uk/kai/internal/job"
 	"github.com/g4uk/kai/internal/jobevents"
 	"github.com/g4uk/kai/internal/redisconn"
+	"github.com/g4uk/kai/internal/video"
 )
 
-// processTick is the worker's stub progression (specs/popup-notifications+sse/spec.md
-// Scope: "a deliberate stand-in for the real analysis pipeline"): it
-// snapshots BOTH the currently-pending and currently-processing jobs BEFORE
-// writing anything this tick (load-bearing ordering — see plan.md's Risks
-// section), then advances the snapshotted pending jobs to "processing" and
-// the snapshotted (pre-tick) processing jobs to "done", publishing a
-// jobevents.StatusChanged after each successful UpdateStatus. A publish
-// error is logged and does not stop the tick or crash the process (spec
-// edge case 6) — only the notification path degrades if Redis is briefly
-// unavailable.
-func processTick(ctx context.Context, sqlDB *sql.DB, redisClient *redis.Client) {
+// defaultProcessingTimeout is used when PROCESSING_TIMEOUT is unset (spec
+// Scope: "a configurable timeout (env var, default 10 minutes)").
+const defaultProcessingTimeout = 10 * time.Minute
+
+// Processor runs the real (or, in tests, faked) download/probe/analyze
+// pipeline for a job's youtube_url. It is a small, consumer-defined
+// single-method interface (matching the OTPRequester/JobCreator pattern in
+// internal/handler) so processTick's tests can substitute a fake with zero
+// real network calls or yt-dlp/ffmpeg invocations.
+type Processor interface {
+	Process(ctx context.Context, youtubeURL string) (video.Result, error)
+}
+
+// pipelineProcessor adapts a *video.Pipeline (whose method is named Run,
+// per internal/video's Pipeline.Run(ctx, youtubeURL) (Result, error)) to the
+// Processor interface.
+type pipelineProcessor struct {
+	pipeline *video.Pipeline
+}
+
+func (p pipelineProcessor) Process(ctx context.Context, youtubeURL string) (video.Result, error) {
+	return p.pipeline.Run(ctx, youtubeURL)
+}
+
+// processTick performs one pass over every job snapshotted as "pending" at
+// call time and, for each, runs the full pipeline synchronously within this
+// same call (specs/video-processing/plan.md steps 6/7 — replacing the
+// popup-notifications+sse stub's separate-tick "advance pending, then
+// advance processing" model, an intentional behavior change, not a
+// regression: plan.md Risks #2).
+//
+// For each pending job: UpdateStatus->processing (publish fires), then
+// processor.Process(ctx, youtubeURL) runs. On success: job.SaveResults +
+// job.SaveSummary (success text) + UpdateStatus->done (second publish
+// fires). On failure: job.SaveSummary (failure reason) + UpdateStatus->failed
+// (second publish fires), with zero SaveResults calls.
+//
+// processTick never scans for pre-existing "processing" jobs — under this
+// synchronous-per-job model, no job should be sitting in "processing" at the
+// start of a tick during normal operation; a crash mid-pipeline is the one
+// exception, and per spec Non-scope it is deliberately never picked back up.
+func processTick(ctx context.Context, sqlDB *sql.DB, redisClient *redis.Client, processor Processor) {
 	pending, err := job.ListByStatus(ctx, sqlDB, "pending")
 	if err != nil {
 		slog.Error("worker: list pending jobs failed", "err", err)
 		return
 	}
-	processing, err := job.ListByStatus(ctx, sqlDB, "processing")
-	if err != nil {
-		slog.Error("worker: list processing jobs failed", "err", err)
-		return
-	}
 
 	for _, j := range pending {
-		updated, err := job.UpdateStatus(ctx, sqlDB, j.ID, "processing")
+		processing, err := job.UpdateStatus(ctx, sqlDB, j.ID, "processing")
 		if err != nil {
 			slog.Error("worker: advance pending->processing failed", "job_id", j.ID, "err", err)
 			continue
 		}
-		publishStatusChanged(ctx, redisClient, updated)
-	}
+		publishStatusChanged(ctx, redisClient, processing)
 
-	for _, j := range processing {
-		updated, err := job.UpdateStatus(ctx, sqlDB, j.ID, "done")
-		if err != nil {
-			slog.Error("worker: advance processing->done failed", "job_id", j.ID, "err", err)
-			continue
+		result, procErr := processor.Process(ctx, processing.YoutubeURL)
+
+		var final job.Job
+		if procErr == nil {
+			if err := job.SaveResults(ctx, sqlDB, processing.ID, result.Participants); err != nil {
+				slog.Error("worker: save results failed", "job_id", processing.ID, "err", err)
+			}
+			if err := job.SaveSummary(ctx, sqlDB, processing.ID, successSummary(result)); err != nil {
+				slog.Error("worker: save summary failed", "job_id", processing.ID, "err", err)
+			}
+
+			final, err = job.UpdateStatus(ctx, sqlDB, processing.ID, "done")
+			if err != nil {
+				slog.Error("worker: advance processing->done failed", "job_id", processing.ID, "err", err)
+				continue
+			}
+		} else {
+			if err := job.SaveSummary(ctx, sqlDB, processing.ID, failureSummary(procErr)); err != nil {
+				slog.Error("worker: save failure summary failed", "job_id", processing.ID, "err", err)
+			}
+
+			final, err = job.UpdateStatus(ctx, sqlDB, processing.ID, "failed")
+			if err != nil {
+				slog.Error("worker: advance processing->failed failed", "job_id", processing.ID, "err", err)
+				continue
+			}
 		}
-		publishStatusChanged(ctx, redisClient, updated)
+		publishStatusChanged(ctx, redisClient, final)
 	}
+}
+
+// successSummary renders a short human-readable summary for a successfully
+// processed job (spec Scope: "duration/resolution/fps and participant
+// count").
+func successSummary(result video.Result) string {
+	m := result.Metadata
+	return fmt.Sprintf(
+		"duration %.1fs, %dx%d @ %.2ffps, %d participant(s) detected",
+		m.Duration, m.Width, m.Height, m.FPS, len(result.Participants),
+	)
+}
+
+// failureSummary renders a short human-readable failure reason for a job
+// whose processing attempts were all exhausted.
+func failureSummary(err error) string {
+	return fmt.Sprintf("processing failed: %v", err)
 }
 
 // publishStatusChanged publishes j's new status to jobevents.Channel,
@@ -72,7 +137,7 @@ func publishStatusChanged(ctx context.Context, redisClient *redis.Client, j job.
 	}
 }
 
-func runLoop(ctx context.Context, sqlDB *sql.DB, redisClient *redis.Client) {
+func runLoop(ctx context.Context, sqlDB *sql.DB, redisClient *redis.Client, processor Processor) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -80,7 +145,7 @@ func runLoop(ctx context.Context, sqlDB *sql.DB, redisClient *redis.Client) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			processTick(ctx, sqlDB, redisClient)
+			processTick(ctx, sqlDB, redisClient, processor)
 		}
 	}
 }
@@ -106,5 +171,24 @@ func main() {
 	}
 	defer func() { _ = redisClient.Close() }()
 
-	runLoop(ctx, sqlDB, redisClient)
+	processingTimeout := defaultProcessingTimeout
+	if v := os.Getenv("PROCESSING_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			slog.Error("worker: invalid PROCESSING_TIMEOUT, using default", "value", v, "default", processingTimeout, "err", err)
+		} else {
+			processingTimeout = d
+		}
+	}
+
+	pipeline := &video.Pipeline{
+		Downloader:  video.YTDLPDownloader{},
+		Prober:      video.FFProbeProber{},
+		Analyzer:    video.FFMPEGAnalyzer{},
+		BackoffBase: 1 * time.Second,
+		Timeout:     processingTimeout,
+	}
+	processor := pipelineProcessor{pipeline: pipeline}
+
+	runLoop(ctx, sqlDB, redisClient, processor)
 }
