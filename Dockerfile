@@ -12,6 +12,7 @@ COPY --from=builder /out/api /api
 ENTRYPOINT ["/api"]
 
 FROM alpine:3.19 AS worker
+RUN apk add --no-cache ffmpeg yt-dlp
 COPY --from=builder /out/worker /worker
 ENTRYPOINT ["/worker"]
 

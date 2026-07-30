@@ -46,6 +46,7 @@ services:
     environment:
       DB_DSN: "root:secret@tcp(mysql:3306)/kumite?parseTime=true"
       REDIS_ADDR: "redis:6379"
+      PROCESSING_TIMEOUT: "10m"
     depends_on:
       mysql:
         condition: service_healthy
