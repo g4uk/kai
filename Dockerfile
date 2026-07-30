@@ -12,7 +12,15 @@ COPY --from=builder /out/api /api
 ENTRYPOINT ["/api"]
 
 FROM alpine:3.19 AS worker
-RUN apk add --no-cache ffmpeg yt-dlp
+RUN apk add --no-cache ffmpeg python3 py3-pip && \
+    pip install --break-system-packages --no-cache-dir yt-dlp
+# yt-dlp merges separately-downloaded video/audio formats into a container
+# that doesn't always match the extension in ytdlp.go's `-o` destPath (e.g.
+# ending up as video.mp4.webm instead of video.mp4), which breaks the
+# downstream ffprobe step that expects the exact requested path. Forcing the
+# merge output format to mp4 system-wide keeps the downloaded file at the
+# exact path internal/video/ytdlp.go requests, with no change to that file.
+RUN echo "--merge-output-format mp4" > /etc/yt-dlp.conf
 COPY --from=builder /out/worker /worker
 ENTRYPOINT ["/worker"]
 
