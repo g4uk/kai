@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/g4uk/kai/internal/video"
 )
 
 // ErrNotFound is returned when a lookup finds no matching job row (or one
@@ -300,4 +302,66 @@ func GetByID(ctx context.Context, db *sql.DB, id, userID uint64) (JobDetail, err
 	detail.Summary = summary
 
 	return detail, nil
+}
+
+// SaveResults writes one participants row plus exactly one
+// participant_metrics row (metric_key='activity_score') per detected
+// participant, all within a single transaction (spec criterion 5: never
+// zero, never more than one activity_score row per participant). Zero
+// participants is a valid, no-op outcome (spec criterion 4: zero detected
+// participants is not an error) — it writes nothing and returns nil.
+func SaveResults(ctx context.Context, db *sql.DB, jobID uint64, participants []video.ParticipantResult) error {
+	if len(participants) == 0 {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("job save results: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, p := range participants {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO participants (job_id, label) VALUES (?, ?)`,
+			jobID, p.Label,
+		)
+		if err != nil {
+			return fmt.Errorf("job save results: insert participant %q: %w", p.Label, err)
+		}
+
+		participantID, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("job save results: last insert id for %q: %w", p.Label, err)
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO participant_metrics (participant_id, metric_key, metric_value) VALUES (?, 'activity_score', ?)`,
+			participantID, p.ActivityScore,
+		); err != nil {
+			return fmt.Errorf("job save results: insert metric for %q: %w", p.Label, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("job save results: commit: %w", err)
+	}
+
+	return nil
+}
+
+// SaveSummary upserts the one job_summaries row for jobID
+// (job_summaries.job_id is UNIQUE per 001_initial_schema.sql), so a second
+// call for the same jobID replaces the prior summary text rather than
+// inserting a second row.
+func SaveSummary(ctx context.Context, db *sql.DB, jobID uint64, summary string) error {
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO job_summaries (job_id, summary) VALUES (?, ?)
+		 ON DUPLICATE KEY UPDATE summary = VALUES(summary)`,
+		jobID, summary,
+	); err != nil {
+		return fmt.Errorf("job save summary: %w", err)
+	}
+
+	return nil
 }

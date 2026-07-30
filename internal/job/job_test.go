@@ -44,6 +44,7 @@ import (
 
 	"github.com/g4uk/kai/internal/db"
 	"github.com/g4uk/kai/internal/user"
+	"github.com/g4uk/kai/internal/video"
 )
 
 // testDB mirrors internal/user/user_test.go's helper exactly; it is
@@ -760,5 +761,228 @@ func TestGetByID_ForeignTenant(t *testing.T) {
 	_, err = GetByID(ctx, sqlDB, j.ID, otherID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID for a job owned by a different user: got err %v, want ErrNotFound (indistinguishable from nonexistent)", err)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// TDD RED PHASE NOTE (specs/video-processing/plan.md step 4)
+//
+// The tests below drive not-yet-existing additions to internal/job/job.go.
+// Until job.go defines the following, this package fails to compile
+// (expected, correct red state) — and, independently, until
+// internal/video/video.go defines ParticipantResult (see
+// internal/video/video_test.go's own red-phase note), this file's import of
+// internal/video also fails to compile:
+//
+//	func SaveResults(ctx context.Context, db *sql.DB, jobID uint64, participants []video.ParticipantResult) error
+//	func SaveSummary(ctx context.Context, db *sql.DB, jobID uint64, summary string) error
+//
+// SaveResults inserts one participants row (label = ParticipantResult.Label)
+// plus exactly one participant_metrics row (metric_key = 'activity_score',
+// metric_value = ParticipantResult.ActivityScore) per participant, all
+// within a single transaction — per spec criterion 5, never zero, never
+// more than one activity_score row per participant. N=0 writes nothing and
+// returns a nil error (spec criterion 4: zero detected participants is a
+// valid, non-error outcome).
+//
+// SaveSummary upserts (INSERT ... ON DUPLICATE KEY UPDATE, per
+// job_summaries.job_id's UNIQUE constraint from 001_initial_schema.sql) the
+// one job_summaries row for jobID, per plan.md step 4.
+// ----------------------------------------------------------------------------
+
+// countParticipants returns how many participants rows exist for jobID.
+func countParticipants(t *testing.T, sqlDB *sql.DB, jobID uint64) int {
+	t.Helper()
+
+	var count int
+	if err := sqlDB.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM participants WHERE job_id = ?`, jobID,
+	).Scan(&count); err != nil {
+		t.Fatalf("countParticipants(%d): %v", jobID, err)
+	}
+	return count
+}
+
+// loadParticipantActivityScores returns a label -> activity_score map for
+// every participant belonging to jobID, and separately the count of
+// participant_metrics rows found (so a test can assert "exactly one row per
+// participant" rather than just "the values look right").
+func loadParticipantActivityScores(t *testing.T, sqlDB *sql.DB, jobID uint64) (map[string]float64, int) {
+	t.Helper()
+
+	rows, err := sqlDB.QueryContext(context.Background(),
+		`SELECT p.label, m.metric_key, m.metric_value
+		 FROM participants p
+		 JOIN participant_metrics m ON m.participant_id = p.id
+		 WHERE p.job_id = ?`,
+		jobID,
+	)
+	if err != nil {
+		t.Fatalf("loadParticipantActivityScores(%d): query: %v", jobID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	scores := make(map[string]float64)
+	metricRowCount := 0
+	for rows.Next() {
+		var label, key string
+		var value float64
+		if err := rows.Scan(&label, &key, &value); err != nil {
+			t.Fatalf("loadParticipantActivityScores(%d): scan: %v", jobID, err)
+		}
+		metricRowCount++
+		if key != "activity_score" {
+			t.Errorf("loadParticipantActivityScores(%d): unexpected metric_key %q, want %q", jobID, key, "activity_score")
+			continue
+		}
+		scores[label] = value
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("loadParticipantActivityScores(%d): rows: %v", jobID, err)
+	}
+	return scores, metricRowCount
+}
+
+// ---- SaveResults ---------------------------------------------------------
+
+func TestSaveResults_ZeroParticipants(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559996001")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=save-results-zero-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+
+	if err := SaveResults(ctx, sqlDB, j.ID, []video.ParticipantResult{}); err != nil {
+		t.Fatalf("SaveResults with zero participants: got err %v, want nil", err)
+	}
+
+	if got := countParticipants(t, sqlDB, j.ID); got != 0 {
+		t.Errorf("countParticipants = %d, want 0 (zero detected participants is a valid outcome, not an error)", got)
+	}
+	scores, metricRows := loadParticipantActivityScores(t, sqlDB, j.ID)
+	if len(scores) != 0 || metricRows != 0 {
+		t.Errorf("loadParticipantActivityScores = %v (metricRows=%d), want empty/0", scores, metricRows)
+	}
+}
+
+func TestSaveResults_MultipleParticipants(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559996002")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=save-results-multi-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+
+	participants := []video.ParticipantResult{
+		{Label: "Participant 1", ActivityScore: 12.3},
+		{Label: "Participant 2", ActivityScore: 7.1},
+		{Label: "Participant 3", ActivityScore: 0.5},
+	}
+
+	if err := SaveResults(ctx, sqlDB, j.ID, participants); err != nil {
+		t.Fatalf("SaveResults: %v", err)
+	}
+
+	if got := countParticipants(t, sqlDB, j.ID); got != len(participants) {
+		t.Fatalf("countParticipants = %d, want %d (exactly N participants rows)", got, len(participants))
+	}
+
+	scores, metricRows := loadParticipantActivityScores(t, sqlDB, j.ID)
+	if metricRows != len(participants) {
+		t.Errorf("participant_metrics row count = %d, want %d (exactly one activity_score row per participant)", metricRows, len(participants))
+	}
+	for _, want := range participants {
+		got, ok := scores[want.Label]
+		if !ok {
+			t.Errorf("no activity_score metric found for participant %q", want.Label)
+			continue
+		}
+		if got != want.ActivityScore {
+			t.Errorf("participant %q activity_score = %v, want %v", want.Label, got, want.ActivityScore)
+		}
+	}
+}
+
+// ---- SaveSummary ----------------------------------------------------------
+
+func TestSaveSummary_WritesRow(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559996003")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=save-summary-write-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+
+	wantSummary := "duration 65.5s, 1920x1080 @ 29.97fps, 2 participants detected"
+	if err := SaveSummary(ctx, sqlDB, j.ID, wantSummary); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+
+	var gotSummary string
+	var rowCount int
+	if err := sqlDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM job_summaries WHERE job_id = ?`, j.ID,
+	).Scan(&rowCount); err != nil {
+		t.Fatalf("count job_summaries: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("job_summaries row count for job = %d, want 1", rowCount)
+	}
+	if err := sqlDB.QueryRowContext(ctx,
+		`SELECT summary FROM job_summaries WHERE job_id = ?`, j.ID,
+	).Scan(&gotSummary); err != nil {
+		t.Fatalf("select summary: %v", err)
+	}
+	if gotSummary != wantSummary {
+		t.Errorf("summary = %q, want %q", gotSummary, wantSummary)
+	}
+}
+
+func TestSaveSummary_UpsertsOnSecondCall(t *testing.T) {
+	sqlDB := testDB(t)
+	ctx := context.Background()
+	userID := mustCreateUser(t, sqlDB, "+15559996004")
+
+	j, err := Create(ctx, sqlDB, userID, "https://www.youtube.com/watch?v=save-summary-upsert-1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cleanupJob(t, sqlDB, j.ID)
+
+	if err := SaveSummary(ctx, sqlDB, j.ID, "first attempt: failed, network error"); err != nil {
+		t.Fatalf("first SaveSummary: %v", err)
+	}
+	if err := SaveSummary(ctx, sqlDB, j.ID, "second attempt: done, 1 participant"); err != nil {
+		t.Fatalf("second SaveSummary: %v", err)
+	}
+
+	var rowCount int
+	if err := sqlDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM job_summaries WHERE job_id = ?`, j.ID,
+	).Scan(&rowCount); err != nil {
+		t.Fatalf("count job_summaries: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("job_summaries row count after two SaveSummary calls = %d, want 1 (upsert, not a second row)", rowCount)
+	}
+
+	var gotSummary string
+	if err := sqlDB.QueryRowContext(ctx,
+		`SELECT summary FROM job_summaries WHERE job_id = ?`, j.ID,
+	).Scan(&gotSummary); err != nil {
+		t.Fatalf("select summary: %v", err)
+	}
+	if gotSummary != "second attempt: done, 1 participant" {
+		t.Errorf("summary after second call = %q, want the second call's text (upsert replaces, not appends)", gotSummary)
 	}
 }
