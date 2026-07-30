@@ -176,6 +176,18 @@ for TRACE in "$REPO"/harness/evals/traces/*.md; do
 
   if [ "$OK" = 1 ]; then echo "- $NAME: PASS" | tee -a "$RESULTS"; PASS=$((PASS+1));
   else echo "- $NAME: FAIL" | tee -a "$RESULTS"; fi
+
+  # A trace's own checks may have started a docker-compose stack (docker
+  # compose up -d) — nothing ever tore it down, only this directory gets
+  # deleted below, not the containers. They keep running and holding their
+  # host ports, so the NEXT trace's docker compose up then fails outright
+  # ("port is already allocated") for a reason that has nothing to do with
+  # its own code (caught live: 002's leftover containers broke 003's run).
+  # Tear down in the same place compose checks are ever run
+  # (HARNESS_EVAL_CHECKS_HOST=1) — a no-op if nothing came up.
+  if [ -f "$WT/docker-compose.yml" ] || [ -f "$WT/compose.yml" ]; then
+    run_check "$WT" "docker compose down -v" >/dev/null 2>&1 || true
+  fi
   rm -rf "$WT"
 done
 echo "" | tee -a "$RESULTS" >/dev/null
