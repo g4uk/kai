@@ -63,7 +63,9 @@ func (h *JobStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case raw := <-events:
-			fmt.Fprintf(w, "event: job_status\ndata: %s\n\n", raw)
+			if _, err := fmt.Fprintf(w, "event: job_status\ndata: %s\n\n", raw); err != nil {
+				return
+			}
 			flusher.Flush()
 		case <-ticker.C:
 			if _, err := h.Sessions.Validate(r.Context(), cookie.Value); err != nil {
