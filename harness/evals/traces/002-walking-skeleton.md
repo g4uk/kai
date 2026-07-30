@@ -15,4 +15,4 @@ within 60 seconds.
 - [ ] cmd: go test ./...
 - [ ] cmd: docker compose up --build -d && sleep 30 && curl -sf http://localhost:8080/healthz | grep '"status":"ok"'
 - [ ] cmd: docker compose stop mysql && curl -s http://localhost:8080/healthz | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['mysql']=='error' and d['redis']=='ok' and d['status']=='error'"
-- [ ] cmd: docker compose down -v && docker compose up --build -d && sleep 30 && docker compose exec mysql mysql -uroot -psecret kumite -e "SHOW TABLES;" 2>/dev/null | grep -c '\w' | grep -qE '^[56]$'
+- [ ] cmd: docker compose down -v && docker compose up --build -d && sleep 30 && docker compose exec mysql mysql -uroot -psecret kumite -e "SHOW TABLES;" | grep -c '\w' | grep -qE '^[56]$'
