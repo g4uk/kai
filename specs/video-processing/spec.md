@@ -1,0 +1,63 @@
+# Spec: Video Processing
+
+## Problem
+
+`specs/popup-notifications+sse/spec.md`'s worker stub mechanically advances every job through `pending→processing→done` after a fixed delay, with no real work done — "a deliberate stand-in for the real analysis pipeline" (its own words, Scope section). `specs/jobs-api/spec.md` explicitly deferred "the video-analysis logic itself" to "a future worker spec." This spec is that pipeline: it replaces the stub with real per-job work — download the submitted YouTube video, auto-detect participants, and compute a real per-participant metric — so a submitted job's `done` result reflects something that actually happened to that video, not a fixed-delay no-op.
+
+## Scope
+
+- **Real download step** — `cmd/worker/main.go`'s pending-job handling downloads the video for a job's `youtube_url` (via a shelled-out `yt-dlp`/`ffmpeg` invocation, added to the `worker` Docker image stage) into a per-job temporary directory before any analysis begins.
+- **Technical metadata extraction** — duration, resolution, and frame rate are read from the downloaded file (via `ffprobe`/`ffmpeg`).
+- **Participant auto-detection** — a lightweight, non-ML motion-region detection pass over sampled frames identifies distinct moving regions ("participants"); each detected participant becomes one `participants` row (`label` = `"Participant 1"`, `"Participant 2"`, etc., in detection order) with no manual pre-registration step.
+- **Per-participant activity metric** — for each detected participant, a frame-difference-based "activity score" (a single float summarizing how much that participant's region moved across the sampled frames) is computed and written as exactly one `participant_metrics` row per participant, `metric_key = 'activity_score'`.
+- **Job summary** — one `job_summaries` row per completed (or failed) job, `summary` holding a short human-readable text: on success, video duration/resolution/fps and participant count; on failure (after all retries exhausted), a human-readable reason.
+- **Retry with exponential backoff** — a job's processing attempt (download → metadata → detection → scoring, treated as one retryable unit) is retried up to 3 total attempts (1 initial + 2 retries) with exponential backoff (1s, then 2s) between attempts, before the job is marked `failed`. Retries are in-process within a single `processing` pass — no new job status or DB column is introduced for attempt tracking (see Non-scope).
+- **Ephemeral storage** — the downloaded video file and any extracted frames live only in a per-job temp directory for the duration of that job's processing attempt(s); the directory is removed (success, failure, or timeout) before the worker moves to the next job.
+- **Per-attempt timeout** — each processing attempt is bounded by a configurable timeout (env var, default 10 minutes); exceeding it is treated as a failed attempt, subject to the same retry policy as any other failure.
+- **Testable seams** — the download step, frame/metadata extraction, and participant-detection/scoring step are each defined behind small, consumer-defined interfaces (matching the `OTPRequester`/`JobCreator` pattern already used in `internal/handler`), so `test-writer`/`implementer` can substitute fakes for video I/O and CV work in tests without invoking real `yt-dlp`/`ffmpeg` or real YouTube network calls.
+
+## Non-scope
+
+- **Real technique/strike detection or pose estimation.** The "activity score" is a coarse motion-magnitude number, not a count of strikes, stances, or techniques — no ML/pose-estimation dependency (MediaPipe, OpenPose, etc.) is introduced by this spec.
+- **New job statuses or a new `analysis_jobs` column for attempt/retry tracking.** Retries happen entirely within one `processing` pass in worker memory; `job.validTransitions` (`pending→processing`, `processing→done/failed`) is unchanged.
+- **New HTTP endpoints.** Results surface entirely through the existing `GET /jobs/:id` response shape from `specs/jobs-api/spec.md` (`participants`, `participant_metrics`, `job_summaries`) — no new route is added.
+- **Video/frame persistence beyond the current job's processing.** Nothing is kept after a job reaches `done` or `failed`; there is no video-file cache, no re-analysis of a previously downloaded file, and no dedup of two jobs (same or different user) that reference the identical `youtube_url` — each downloads independently.
+- **Crash/restart recovery for jobs stuck mid-`processing`.** If the worker process crashes or is killed mid-pipeline, that job remains in `processing` indefinitely; recovering it (e.g., a stale-job sweeper) is a future spec, not this one.
+- **Concurrent/parallel job processing.** The worker continues to process one job at a time, sequentially, matching the single-worker/single-Hetzner-VPS deployment (`docs/decisions.md` #004); this spec makes each job's `processing` duration reflect real work instead of a fixed delay, it does not parallelize across jobs.
+- **Participant re-identification across jobs.** Two jobs analyzing two different videos of the same real person produce unrelated `participants` rows — no cross-job identity linking.
+- **Any change to `POST /jobs`, `GET /jobs`, or `GET /jobs/:id` request/response shapes.** This spec only changes what populates the rows those endpoints already read.
+
+## Acceptance criteria
+
+1. When a `pending` job's video downloads and analyzes successfully on the first attempt, then the job transitions `pending→processing→done`, exactly one `job_summaries` row is written containing duration/resolution/fps and the detected participant count, and the SSE/popup notification path (existing `jobevents`/Redis pub/sub) fires exactly as it does today for a `done` transition.
+2. When the download step fails transiently (e.g., a simulated network error via the fake `Downloader` in tests) on attempt 1 but succeeds on attempt 2, then the job still reaches `done`, and the pipeline is observed to have made exactly 2 attempts with a 1s backoff between them.
+3. When all 3 attempts (1 initial + 2 retries) fail, then the job transitions `processing→failed`, no `participants` or `participant_metrics` rows exist for that job, exactly one `job_summaries` row is written with a human-readable failure reason, and no further retries occur.
+4. When a downloaded video's motion-detection pass finds zero distinct moving regions, then the job still transitions to `done` (not `failed`) with `participants: []` and a `job_summaries` row noting zero participants detected.
+5. When a downloaded video finds N (N ≥ 1) distinct participants, then exactly N `participants` rows are created (one per detected region) and exactly N `participant_metrics` rows are created (exactly one `activity_score` row per participant — never zero, never more than one per participant).
+6. When a single processing attempt runs longer than the configured per-attempt timeout, then that attempt is treated as failed (subject to the same retry policy as criterion 2/3), and the per-job temp directory from that attempt is removed before any retry begins.
+7. When a job (success or failure, after all retries) finishes, then its per-job temporary directory and all downloaded/extracted files are removed from disk — no leftover files remain regardless of outcome.
+8. When the worker's `Downloader`/frame-extraction/detection dependencies are substituted with test fakes, then the full retry/backoff/success/failure pipeline is exercised in tests with zero real network calls or real `yt-dlp`/`ffmpeg` invocations.
+9. When `docker compose up --build` runs, then the `worker` image contains a working `yt-dlp` and `ffmpeg`/`ffprobe` installation, and a real job submitted against a short real YouTube video reaches `done` with a non-empty `job_summaries.summary` and at least one `participant_metrics` row.
+10. When `go build ./cmd/...` is run, then the `worker` binary compiles with zero errors.
+
+## Edge cases
+
+1. **Transient download failure recovered by retry** — covered by criterion 2; the job reaches `done` without any manual intervention, and the two attempts are separated by the specified backoff.
+2. **All retries exhausted** — covered by criterion 3; partial state (any participant/metric rows from a failed attempt) is not left behind — a failed attempt writes nothing to `participants`/`participant_metrics`, only the final `job_summaries` failure row.
+3. **Video too short/corrupt to analyze (deterministic, not transient)** — e.g., fewer than 2 usable frames after extraction. This is not retried (retrying a deterministic failure wastes all 3 attempts on an outcome that cannot change) — the job fails immediately on attempt 1 with a `job_summaries` reason distinguishing this case from a network/timeout failure.
+4. **Zero participants detected** — covered by criterion 4; an empty-but-valid result, not an error.
+5. **Worker crash/restart while a job is `processing`** — the job remains in `processing` indefinitely (per Non-scope); this is an accepted, documented limitation for this spec, not a silently-swallowed bug.
+6. **Two jobs (same or different user) submit the identical `youtube_url`** — each downloads and processes independently; no shared cache, no cross-job interference, matching Non-scope's no-dedup decision.
+7. **Per-attempt timeout mid-detection** — covered by criterion 6; the temp directory from the timed-out attempt is cleaned up before the next retry's temp directory is created, so retries never accumulate disk usage from prior timed-out attempts.
+8. **Extremely long video exceeding the per-attempt timeout on every attempt** — the job exhausts all 3 attempts, each hitting the timeout, and ends in `failed` with a `job_summaries` reason indicating a timeout (not a generic error), so the user can distinguish "too long to process" from "download failed."
+
+## Constraints
+
+- Security: the downloader must invoke `yt-dlp`/`ffmpeg` via `exec.Command` with the URL as a discrete argv element — never via shell string interpolation/concatenation — to avoid command injection from a crafted `youtube_url` (defense in depth on top of `specs/jobs-api`'s existing URL-format validation).
+- Security: only `youtube_url` values already accepted by `specs/jobs-api`'s format validation (`watch?v=`, `youtu.be/`, `/shorts/`) ever reach the downloader; this spec does not loosen or re-implement that validation.
+- Compatibility: no new migration — all results fit the existing `participants`/`participant_metrics`/`job_summaries` schema from `001_initial_schema.sql`; `job.validTransitions` is unchanged.
+- Compatibility: no ORM — any new SQL (participant/metric/summary inserts) uses raw `database/sql`, consistent with the rest of `internal/job`.
+- Reliability: a publish error to Redis (SSE notification) on a `done`/`failed` transition is logged and does not fail the job or block progression, consistent with the existing `publishStatusChanged` behavior in `cmd/worker/main.go`.
+- Resource management: per-job temp directories are removed via a `defer`-guarded cleanup path that runs on success, failure, timeout, and panic recovery — a crashed analysis attempt must not leak disk space.
+- Deployment: `yt-dlp` and `ffmpeg`/`ffprobe` are added only to the `worker` target of the existing multi-stage `Dockerfile`; the `api` and `web` images are unaffected.
+- Performance/scale: the worker remains single-threaded/sequential per `docs/decisions.md` #004 (single Hetzner VPS, no horizontal scaling) — this spec does not add concurrency across jobs.
