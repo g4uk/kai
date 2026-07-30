@@ -16,7 +16,7 @@ Go · Docker Compose · MySQL · Redis · Hetzner VPS
 - Every handler must verify the authenticated user owns the requested resource (user_id check on every query)
 - Return errors, never panic; wrap with context: `fmt.Errorf("context: %w", err)`
 - Handlers are thin — delegate all business logic to the service layer
-- Handlers depend on small, consumer-defined single-method interfaces (e.g. `Pinger`, `OTPRequester`) — never import a concrete service/repo type directly into a handler
+- Handlers and background workers depend on small, consumer-defined single-method interfaces (e.g. `Pinger`, `OTPRequester`, `Downloader`) — never import a concrete service/repo type directly into a handler or worker
 - No ORM — raw SQL via `database/sql` or `sqlx`
 - No global mutable state
 - Every feature starts with specs/<name>/spec.md — no spec, no code
@@ -29,6 +29,7 @@ Go · Docker Compose · MySQL · Redis · Hetzner VPS
 - A plan step concluding "no code change needed" for a file the spec's Scope names explicitly must be backed by an empirical check (an instrumented run, a debug trace) — not inferred from reading the code's structure alone, especially for framework reconciliation/remount/lifecycle behavior (recurred: session-revalidation's plan asserted `ProtectedRoute` remounts on sibling-route navigation based on reading `router.tsx`'s JSX; a running instance proved React Router reuses the component instead, forcing a plan amendment mid-implementation)
 - A deviation an implementer identifies and explains in its own report to the orchestrator is not yet surfaced — only an edit to spec.md counts; describing it in a subagent's summary is exactly as insufficient as leaving it only in commit history (recurred 2x within one feature: popup-notifications+sse's caller-publishes design for `UpdateStatus` and its `ensureChecked`-widening in `useJobStatusEvents` were both self-reported by implementers in their final summaries, but only reached spec.md a review round later, after the reviewer independently caught the same things)
 - A spec's acceptance criteria about infrastructure/deployment behavior that unit or component tests structurally cannot exercise (reverse-proxy config, container networking, cross-process pub/sub timing) are UNVERIFIED, not READY, until a live `docker compose` pass confirms them — the same standard already applied to UI/visual criteria, extended here (recurred: popup-notifications+sse's nginx SSE-buffering fix had zero automated test coverage by design; confirmed only by a manual `docker compose` smoke test during `/harness:verify`, not by any step in the TDD plan)
+- Every edge case listed in a spec's Edge cases section must be traceable to a named test in plan.md's red-phase step(s) — an edge case with no explicit planned test is exactly the kind of thing that only surfaces via manual review, not TDD's own safety net (recurred: video-processing's edge case 3 — video too short/corrupt to analyze — was omitted from plan.md's red-phase test list and silently conflated with criterion 4's zero-participants case in the first implementation pass, caught only by reviewer inspection)
 
 ## YAGNI gate
 - Interface/abstraction — at the SECOND implementation, not before
