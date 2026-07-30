@@ -21,7 +21,17 @@ docker run --rm \
   --memory=4g --cpus=2 --pids-limit=512 \
   --cap-drop=ALL --security-opt no-new-privileges \
   "$IMG" \
-  timeout 300 claude -p "$PROMPT" --output-format stream-json --verbose --dangerously-skip-permissions \
+  bash -c '
+    # --dangerously-skip-permissions bypasses the allow/deny list, but not
+    # the separate workspace-trust dialog — an untrusted /work makes claude
+    # silently ignore every permissions.allow entry (seen live in CI: every
+    # trace failed the same way, trajectory tools=[none], claude never took
+    # a single action). No interactive session exists here to accept that
+    # dialog, so pre-accept it the way the CLIs own error message says to.
+    mkdir -p "$HOME"
+    printf "%s" "{\"projects\":{\"/work\":{\"hasTrustDialogAccepted\":true}}}" > "$HOME/.claude.json"
+    exec timeout 300 claude -p "$1" --output-format stream-json --verbose --dangerously-skip-permissions
+  ' bash "$PROMPT" \
   > "$OUT" 2>&1
 # stream-json emits one JSON object per line (system/assistant/user/result) instead
 # of a single summary object — harness/evals/run.sh needs the per-turn tool_use trajectory,
