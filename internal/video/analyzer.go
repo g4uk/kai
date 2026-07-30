@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -10,6 +11,18 @@ import (
 	"path/filepath"
 	"sort"
 )
+
+// ErrVideoTooShort indicates a downloaded video yielded fewer than 2 usable
+// sampled frames after extraction — a deterministic, non-retryable outcome
+// (spec edge case 3: "Video too short/corrupt to analyze"), distinct from
+// acceptance criterion 4's "zero participants detected" case. Criterion 4
+// only applies once at least 2 frames were successfully extracted and
+// analyzed but no motion was found between them; ErrVideoTooShort covers the
+// earlier, unrecoverable case where there weren't even enough frames to
+// compare in the first place. Pipeline.Run recognizes this error (via
+// errors.Is) and fails the job immediately on attempt 1 instead of retrying
+// (retrying cannot change a too-short/corrupt video's outcome).
+var ErrVideoTooShort = errors.New("video: too few usable frames to analyze (need at least 2)")
 
 // FFMPEGAnalyzer is the real Analyzer implementation: it shells out to
 // ffmpeg to extract frames at a fixed sample rate, decodes them with the
@@ -63,17 +76,32 @@ func (a FFMPEGAnalyzer) Analyze(ctx context.Context, videoPath, tmpDir string) (
 		return AnalysisResult{}, fmt.Errorf("video: analyze: ffmpeg frame extraction: %w: %s", err, output)
 	}
 
+	return analyzeFrames(framesDir)
+}
+
+// analyzeFrames decodes every frame file in framesDir and runs
+// participant/motion detection over them. Extracted from Analyze so the
+// decode/detect decision logic (in particular, the too-few-frames vs.
+// zero-participants distinction) is directly unit-testable without shelling
+// out to ffmpeg.
+func analyzeFrames(framesDir string) (AnalysisResult, error) {
 	frames, err := decodeFrames(framesDir)
 	if err != nil {
 		return AnalysisResult{}, fmt.Errorf("video: analyze: decode frames: %w", err)
 	}
 	if len(frames) < 2 {
-		// Not enough sampled frames to detect any motion at all — a valid,
-		// if uneventful, outcome (spec criterion 4's "zero participants"
-		// case), not an error.
-		return AnalysisResult{Participants: []ParticipantResult{}}, nil
+		// Deterministic, not transient (spec edge case 3): a video that
+		// yields fewer than 2 usable frames cannot be fixed by retrying, so
+		// this is a hard failure distinguishable from criterion 4's "zero
+		// participants after analyzing >=2 frames" success case, and from a
+		// generic network/timeout failure.
+		return AnalysisResult{}, fmt.Errorf("video: analyze: %w", ErrVideoTooShort)
 	}
 
+	// >=2 frames were successfully extracted and analyzed; zero detected
+	// motion regions here is criterion 4's valid "zero participants" case,
+	// not an error — detectParticipants already returns an empty (non-nil)
+	// slice in that case.
 	return AnalysisResult{Participants: detectParticipants(frames)}, nil
 }
 

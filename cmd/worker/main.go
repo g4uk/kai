@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -118,8 +119,15 @@ func successSummary(result video.Result) string {
 }
 
 // failureSummary renders a short human-readable failure reason for a job
-// whose processing attempts were all exhausted.
+// whose processing attempt(s) ended in failure. A too-short/corrupt video
+// (spec edge case 3, video.ErrVideoTooShort) gets a reason text distinct
+// from a generic network/timeout failure, so a coach reading job_summaries
+// can tell "this video can't be analyzed" apart from "a transient error
+// exhausted all retries."
 func failureSummary(err error) string {
+	if errors.Is(err, video.ErrVideoTooShort) {
+		return fmt.Sprintf("video too short or corrupt to analyze: %v", err)
+	}
 	return fmt.Sprintf("processing failed: %v", err)
 }
 

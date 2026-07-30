@@ -321,6 +321,76 @@ func TestPipeline_Run(t *testing.T) {
 	}
 }
 
+// ---- non-retryable "video too short" error (edge case 3) -------------------
+
+// TestPipeline_Run_NonRetryableAnalyzeErrorFailsOnFirstAttempt asserts that a
+// too-few-frames failure from Analyzer (ErrVideoTooShort, spec edge case 3)
+// is treated as deterministic, not transient: Run must fail immediately on
+// attempt 1 — no backoff sleep, no attempts 2/3 — unlike a generic/transient
+// error (already covered by TestPipeline_Run's "all 3 attempts fail" case),
+// and the returned error must stay distinguishable via errors.Is so a
+// caller (cmd/worker's failureSummary) can render a distinct job_summaries
+// reason instead of a generic network/timeout-style message.
+func TestPipeline_Run_NonRetryableAnalyzeErrorFailsOnFirstAttempt(t *testing.T) {
+	const base = 1 * time.Millisecond
+
+	tempRoot := t.TempDir()
+	var sleeps []time.Duration
+
+	downloader := &fakeDownloader{
+		paths: []string{"/tmp/attempt-0/video.mp4"},
+		errs:  []error{nil},
+	}
+	prober := &fakeProber{metadata: Metadata{Duration: 1, Width: 1, Height: 1, FPS: 1}}
+	analyzer := &fakeAnalyzer{err: ErrVideoTooShort}
+
+	p := &Pipeline{
+		Downloader:  downloader,
+		Prober:      prober,
+		Analyzer:    analyzer,
+		BackoffBase: base,
+		Timeout:     1 * time.Second,
+		Sleep:       recordingSleep(&sleeps),
+		TempDirRoot: tempRoot,
+	}
+
+	result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=too-short")
+
+	if err == nil {
+		t.Fatal("Run: got nil error, want non-nil (video too short to analyze)")
+	}
+	if !errors.Is(err, ErrVideoTooShort) {
+		t.Errorf("Run: err = %v, want errors.Is(err, ErrVideoTooShort) to hold", err)
+	}
+	if len(result.Participants) != 0 {
+		t.Errorf("len(result.Participants) = %d, want 0", len(result.Participants))
+	}
+
+	// Deterministic, non-retryable (spec edge case 3): only 1 attempt made
+	// against every dependency, unlike TestPipeline_Run's "all 3 attempts
+	// fail" transient-error case.
+	if downloader.calls != 1 {
+		t.Errorf("downloader.calls = %d, want 1 (a too-short-video failure must not be retried)", downloader.calls)
+	}
+	if prober.calls != 1 {
+		t.Errorf("prober.calls = %d, want 1", prober.calls)
+	}
+	if analyzer.calls != 1 {
+		t.Errorf("analyzer.calls = %d, want 1", analyzer.calls)
+	}
+	if len(sleeps) != 0 {
+		t.Errorf("sleeps = %v, want none (no backoff before a non-retryable failure)", sleeps)
+	}
+
+	// Sanity check: a plain transient error (the kind that IS retried
+	// elsewhere in this file) must not be mistaken for ErrVideoTooShort.
+	if errors.Is(errors.New("simulated transient network error"), ErrVideoTooShort) {
+		t.Fatal("sanity check failed: a generic error must not match ErrVideoTooShort")
+	}
+
+	assertTempDirCleanedUp(t, tempRoot)
+}
+
 // ---- per-attempt timeout ----------------------------------------------------
 
 func TestPipeline_Run_PerAttemptTimeoutExceeded(t *testing.T) {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +74,29 @@ func (f *fakeProcessor) Process(_ context.Context, youtubeURL string) (video.Res
 	f.calls++
 	f.gotURLs = append(f.gotURLs, youtubeURL)
 	return f.result, f.err
+}
+
+// TestFailureSummary_DistinguishesTooShortVideoFromGenericFailure covers
+// spec edge case 3's requirement that a job_summaries failure reason for a
+// too-short/corrupt video is distinguishable from a generic/timeout failure
+// reason (reviewer finding on video-processing): failureSummary must render
+// different text for video.ErrVideoTooShort than for an arbitrary error.
+func TestFailureSummary_DistinguishesTooShortVideoFromGenericFailure(t *testing.T) {
+	genericErr := errors.New("simulated: all retry attempts exhausted")
+	tooShortErr := fmt.Errorf("video pipeline: attempt 1 failed (non-retryable): %w", video.ErrVideoTooShort)
+
+	genericText := failureSummary(genericErr)
+	tooShortText := failureSummary(tooShortErr)
+
+	if genericText == tooShortText {
+		t.Fatalf("failureSummary produced identical text for a generic failure and ErrVideoTooShort: %q", genericText)
+	}
+	if strings.Contains(genericText, "too short") {
+		t.Errorf("generic failure summary %q should not mention 'too short'", genericText)
+	}
+	if !strings.Contains(tooShortText, "too short") {
+		t.Errorf("ErrVideoTooShort failure summary %q should mention 'too short'", tooShortText)
+	}
 }
 
 func TestRunLoop_Cancels(t *testing.T) {

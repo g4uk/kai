@@ -6,6 +6,7 @@ package video
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -111,6 +112,16 @@ func (p *Pipeline) Run(ctx context.Context, youtubeURL string) (Result, error) {
 			return result, nil
 		}
 		lastErr = err
+
+		if errors.Is(err, ErrVideoTooShort) {
+			// Deterministic, not transient (spec edge case 3): retrying
+			// cannot change a too-short/corrupt video's outcome, so fail
+			// immediately on this attempt instead of burning the remaining
+			// retries. The wrapped error stays distinguishable (via
+			// errors.Is against ErrVideoTooShort) from a generic
+			// network/timeout failure for the caller's job_summaries text.
+			return Result{}, fmt.Errorf("video pipeline: attempt %d failed (non-retryable): %w", attempt, lastErr)
+		}
 
 		if attempt == maxAttempts {
 			break
