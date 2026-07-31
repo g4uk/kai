@@ -11,6 +11,16 @@ set -eu
 DIR=$(cd "$1" && pwd); PROMPT="$2"; OUT="${3:-/dev/stdout}"
 IMG="${HARNESS_IMAGE:-harness-runner:latest}"
 KIT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# This script's only caller is evals/run.sh (grep confirms it — the agent's
+# real work happens in interactive sessions, never through here), and an
+# eval trace is verification against an already-solved task, not new
+# multi-step reasoning — the same "reviewer"-tier judgment call agents/*.md
+# already makes for read-only/checklist work. Defaulting off whatever the
+# account's own default model is (seen live: claude-opus-4-8[1m], ~5x a
+# mid-tier model's price, on a trace whose entire trajectory was "confirm
+# this already-implemented feature still passes its checks") — override
+# with HARNESS_EVAL_MODEL for a specific run if you need the primary tier.
+MODEL="${HARNESS_EVAL_MODEL:-sonnet}"
 
 command -v docker >/dev/null || { echo "FATAL: docker is required for project runs (policy)."; exit 1; }
 docker image inspect "$IMG" >/dev/null 2>&1 || docker build -t "$IMG" "$KIT_DIR/docker"
@@ -30,8 +40,8 @@ docker run --rm \
     # dialog, so pre-accept it the way the CLIs own error message says to.
     mkdir -p "$HOME"
     printf "%s" "{\"projects\":{\"/work\":{\"hasTrustDialogAccepted\":true}}}" > "$HOME/.claude.json"
-    exec timeout 300 claude -p "$1" --output-format stream-json --verbose --dangerously-skip-permissions
-  ' bash "$PROMPT" \
+    exec timeout 300 claude -p "$1" --model "$2" --output-format stream-json --verbose --dangerously-skip-permissions
+  ' bash "$PROMPT" "$MODEL" \
   > "$OUT" 2>&1
 # stream-json emits one JSON object per line (system/assistant/user/result) instead
 # of a single summary object — harness/evals/run.sh needs the per-turn tool_use trajectory,
