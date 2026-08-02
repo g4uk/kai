@@ -71,6 +71,11 @@ BASE_BRANCH=${BASE_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}
 
 # EVAL_LIMIT: run only the first N traces (PR sampling). Unset/0 = all.
 LIMIT="${EVAL_LIMIT:-0}"
+# EVAL_TRACES: comma/space-separated name substrings — run only traces that
+# match one of them, e.g. EVAL_TRACES="007,008,009" while debugging a
+# specific failure, instead of paying to re-run the whole accumulated set
+# every time. Unset = no filter (every trace is a candidate, same as before).
+TRACES_FILTER="${EVAL_TRACES:-}"
 # EVAL_MAX_TURNS: trajectory gate — an agent thrashing past this many turns on a
 # single trace is a quality signal in itself, independent of whether it eventually
 # produced a passing diff. Output eval alone would miss this (mid-2026 whitepaper on
@@ -81,8 +86,18 @@ TOTAL_COST=0
 
 for TRACE in "$REPO"/harness/evals/traces/*.md; do
   [ -e "$TRACE" ] || continue
+  NAME=$(basename "$TRACE" .md)
+  if [ -n "$TRACES_FILTER" ]; then
+    MATCHED=0
+    IFS=', ' read -ra WANT <<< "$TRACES_FILTER"
+    for w in "${WANT[@]}"; do
+      [ -z "$w" ] && continue
+      case "$NAME" in *"$w"*) MATCHED=1; break ;; esac
+    done
+    [ "$MATCHED" = 0 ] && continue
+  fi
   [ "$LIMIT" != "0" ] && [ "$TOTAL" -ge "$LIMIT" ] && break
-  NAME=$(basename "$TRACE" .md); TOTAL=$((TOTAL+1))
+  TOTAL=$((TOTAL+1))
   echo ">> trace $NAME (up to 5 min)..."
 
   # Plain clone, not a worktree: a worktree's .git file holds an absolute HOST
