@@ -93,6 +93,13 @@ func processTick(ctx context.Context, sqlDB *sql.DB, redisClient *redis.Client, 
 				continue
 			}
 		} else {
+			// procErr itself was never logged anywhere before this — only
+			// written into job_summaries via failureSummary, invisible to
+			// `docker compose logs worker` (and to anyone not querying the
+			// DB directly). Found live: a real processing failure produced
+			// zero worker log output, which looked identical to the worker
+			// never running at all.
+			slog.Error("worker: process failed", "job_id", processing.ID, "err", procErr)
 			if err := job.SaveSummary(ctx, sqlDB, processing.ID, failureSummary(procErr)); err != nil {
 				slog.Error("worker: save failure summary failed", "job_id", processing.ID, "err", err)
 			}
