@@ -19,12 +19,17 @@ KIT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # account's own default model is (seen live: claude-opus-4-8[1m], ~5x a
 # mid-tier model's price, on a trace whose entire trajectory was "confirm
 # this already-implemented feature still passes its checks") — override
-# with HARNESS_EVAL_MODEL for a specific run if you need a stronger tier.
-# haiku, not sonnet: verdicts here are decided by deterministic cmd: exit
-# codes, not model judgment — a weaker model risks more turns/thrashing,
-# not a wrong verdict, and every trace so far only ever needed to recognize
-# "already implemented, nothing to change."
-MODEL="${HARNESS_EVAL_MODEL:-haiku}"
+# with HARNESS_EVAL_MODEL for a specific run if you need the primary tier.
+#
+# Tried haiku as the default here — reverted. Measured on the same trace
+# (002-walking-skeleton): sonnet took 6 turns/$0.16/32s; haiku took 33
+# turns/$0.20/143s and hit the EVAL_MAX_TURNS thrashing gate (plus an
+# unexplained Write call on a trace that should need zero changes). Worse
+# on every axis at once — slower, pricier in aggregate despite the lower
+# per-token rate, and it failed the trace for thrashing rather than a real
+# regression, which is exactly the kind of untrustworthy-verdict risk a
+# eval gate can't afford. sonnet is the default again.
+MODEL="${HARNESS_EVAL_MODEL:-sonnet}"
 
 command -v docker >/dev/null || { echo "FATAL: docker is required for project runs (policy)."; exit 1; }
 docker image inspect "$IMG" >/dev/null 2>&1 || docker build -t "$IMG" "$KIT_DIR/docker"
