@@ -89,10 +89,14 @@ for TRACE in "$REPO"/harness/evals/traces/*.md; do
   NAME=$(basename "$TRACE" .md)
   if [ -n "$TRACES_FILTER" ]; then
     MATCHED=0
+    NUM_PREFIX="${NAME%%-*}"
     IFS=', ' read -ra WANT <<< "$TRACES_FILTER"
     for w in "${WANT[@]}"; do
       [ -z "$w" ] && continue
-      case "$NAME" in *"$w"*) MATCHED=1; break ;; esac
+      # exact match on the number prefix (e.g. "007") or the full name
+      # (e.g. "007-session-revalidation") — not a bare substring, which
+      # would let "007" wrongly match a future "0072-..." or "1007-...".
+      if [ "$w" = "$NUM_PREFIX" ] || [ "$w" = "$NAME" ]; then MATCHED=1; break; fi
     done
     [ "$MATCHED" = 0 ] && continue
   fi
