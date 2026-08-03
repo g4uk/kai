@@ -19,8 +19,12 @@ KIT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # account's own default model is (seen live: claude-opus-4-8[1m], ~5x a
 # mid-tier model's price, on a trace whose entire trajectory was "confirm
 # this already-implemented feature still passes its checks") — override
-# with HARNESS_EVAL_MODEL for a specific run if you need the primary tier.
-MODEL="${HARNESS_EVAL_MODEL:-sonnet}"
+# with HARNESS_EVAL_MODEL for a specific run if you need a stronger tier.
+# haiku, not sonnet: verdicts here are decided by deterministic cmd: exit
+# codes, not model judgment — a weaker model risks more turns/thrashing,
+# not a wrong verdict, and every trace so far only ever needed to recognize
+# "already implemented, nothing to change."
+MODEL="${HARNESS_EVAL_MODEL:-haiku}"
 
 command -v docker >/dev/null || { echo "FATAL: docker is required for project runs (policy)."; exit 1; }
 docker image inspect "$IMG" >/dev/null 2>&1 || docker build -t "$IMG" "$KIT_DIR/docker"
