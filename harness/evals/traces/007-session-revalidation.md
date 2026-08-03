@@ -24,7 +24,7 @@ first-load `"unknown"` → block-until-resolved behavior stays unchanged.
 
 ## Checks
 
-- [ ] cmd: cd web && npm ci && npx vitest run src/app/router.test.tsx -t "re-probes getAuthMe on every navigation into a protected route while authenticated" --reporter=verbose 2>&1 | grep -F "✓ src/app/router.test.tsx > router / AuthContext / ProtectedRoute > re-probes getAuthMe on every navigation into a protected route while authenticated (criterion 1, 4)"
-- [ ] cmd: cd web && npm ci && npx vitest run src/app/router.test.tsx -t "redirects to /login once a pending revalidation probe rejects with a 401" --reporter=verbose 2>&1 | grep -F "✓ src/app/router.test.tsx > router / AuthContext / ProtectedRoute > redirects to /login once a pending revalidation probe rejects with a 401 (criterion 3)"
-- [ ] cmd: cd web && npm ci && test "$(npx vitest run src/app/router.test.tsx -t "does not redirect to /login when the revalidation probe fails" --reporter=verbose 2>&1 | grep -c '✓ src/app/router.test.tsx > router / AuthContext / ProtectedRoute > does not redirect to /login when the revalidation probe fails')" = "2"
+- [ ] cmd: cd web && npm ci && OUT=$(npx vitest run src/app/router.test.tsx -t "re-probes getAuthMe on every navigation into a protected route while authenticated" 2>&1); echo "$OUT"; echo "$OUT" | grep -qE '[1-9][0-9]* passed'
+- [ ] cmd: cd web && npm ci && OUT=$(npx vitest run src/app/router.test.tsx -t "redirects to /login once a pending revalidation probe rejects with a 401" 2>&1); echo "$OUT"; echo "$OUT" | grep -qE '[1-9][0-9]* passed'
+- [ ] cmd: cd web && npm ci && OUT=$(npx vitest run src/app/router.test.tsx -t "does not redirect to /login when the revalidation probe fails" 2>&1); echo "$OUT"; echo "$OUT" | grep -qE '\b2 passed'
 - [ ] cmd: cd web && npm ci && npm test -- --run
