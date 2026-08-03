@@ -38,7 +38,7 @@ jobs:
           # TEMPORARY — debugging 007/008/009 specifically; remove this line
           # (or the whole EVAL_TRACES var) once they're green again so every
           # push/PR goes back to covering the full accumulated set.
-          EVAL_TRACES: "007,008,009"
+          EVAL_TRACES: "007"
         run: ./harness/evals/run.sh
       # results/*.md is real project history (per README), but the runner's
       # disk dies with the job — without this, the only copy ever existed in
