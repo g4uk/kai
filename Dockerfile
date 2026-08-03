@@ -12,7 +12,11 @@ COPY --from=builder /out/api /api
 ENTRYPOINT ["/api"]
 
 FROM alpine:3.19 AS worker
-RUN apk add --no-cache ffmpeg python3 py3-pip && \
+# deno: yt-dlp needs a JS runtime to solve YouTube's bot-check challenge —
+# without one, real downloads fail with "Sign in to confirm you're not a
+# bot" (found live in CI; yt-dlp's own warning names deno as the runtime it
+# looks for by default).
+RUN apk add --no-cache ffmpeg python3 py3-pip deno && \
     pip install --break-system-packages --no-cache-dir yt-dlp
 # yt-dlp merges separately-downloaded video/audio formats into a container
 # that doesn't always match the extension in ytdlp.go's `-o` destPath (e.g.
