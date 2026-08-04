@@ -144,13 +144,29 @@ func successSummary(result video.Result) string {
 // context.DeadlineExceeded). Distinguishing "download failed" from
 // "analysis failed" — the two categories with no existing sentinel — has no
 // typed stage-tagging mechanism to hook into: this falls back to matching
-// the "video pipeline: download:"/"video pipeline: analyze:" prefixes
-// runAttempt already wraps every error with (internal/video/video.go). This
-// is a deliberate, smaller-than-planned deviation from plan.md step 10's
+// the "video pipeline: download:"/"video pipeline: validate:"/
+// "video pipeline: probe:"/"video pipeline: analyze:" prefixes runAttempt
+// already wraps every error with (internal/video/video.go). This is a
+// deliberate, smaller-than-planned deviation from plan.md step 10's
 // preferred "typed sentinel/stage tag in internal/video" approach (plan.md
 // Risks #7 anticipated this fallback as an acceptable alternative) —
 // surfaced here per CLAUDE.md's deviation rule; a spec.md amendment is
 // warranted if this lands.
+//
+// A generic (non-video.ErrCorruptDownload) Validator failure and any Prober
+// failure both collapse into "analysis failed": both are post-download,
+// pre-completion stages with no dedicated spec-documented category of their
+// own — "analysis failed" is the natural, already-documented bucket for
+// "something about analyzing this downloaded video didn't work" (reviewer
+// finding: a Prober failure previously matched none of the cases below and
+// silently fell to an undocumented 6th "processing failed" default).
+//
+// The default case below is reachable by a small number of pipeline-internal
+// errors that predate this spec and aren't tied to any pipeline stage
+// (runAttempt's temp-dir creation/removal failures, and attempt panics) —
+// none of these can be ruled out structurally, so the default also returns
+// one of the 5 spec-documented strings ("analysis failed") rather than an
+// undocumented 6th category, per spec Scope item 5's closed set.
 func failureSummary(err error) string {
 	switch {
 	case errors.Is(err, video.ErrCorruptDownload):
@@ -161,10 +177,14 @@ func failureSummary(err error) string {
 		return "analysis timed out"
 	case strings.Contains(err.Error(), "video pipeline: download:"):
 		return "download failed"
+	case strings.Contains(err.Error(), "video pipeline: validate:"):
+		return "analysis failed"
+	case strings.Contains(err.Error(), "video pipeline: probe:"):
+		return "analysis failed"
 	case strings.Contains(err.Error(), "video pipeline: analyze:"):
 		return "analysis failed"
 	default:
-		return "processing failed"
+		return "analysis failed"
 	}
 }
 

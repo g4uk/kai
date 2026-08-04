@@ -589,6 +589,16 @@ func TestFailureSummary_CategorizesWithoutLeakingRawErrorText(t *testing.T) {
 			err:        fmt.Errorf("video pipeline: analyze: %s: %w", marker, errors.New("ffmpeg exited 1")),
 			wantSubstr: "analysis failed",
 		},
+		{
+			name:       "generic probe failure",
+			err:        fmt.Errorf("video pipeline: probe: %s: %w", marker, errors.New("malformed ffprobe output")),
+			wantSubstr: "analysis failed",
+		},
+		{
+			name:       "generic validate failure (not ErrCorruptDownload)",
+			err:        fmt.Errorf("video pipeline: validate: %s: %w", marker, errors.New("ffprobe exited 1")),
+			wantSubstr: "analysis failed",
+		},
 	}
 
 	for _, tc := range cases {
