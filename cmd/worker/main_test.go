@@ -518,13 +518,22 @@ func TestProcessTick_PublishesStageEventsInOrder(t *testing.T) {
 
 	processTick(ctx, sqlDB, redisClient, processor)
 
+	// b.Subscribe(userID) delivers every event for this user on one
+	// undifferentiated channel: processTick first publishes a
+	// StatusChanged{"processing"} event before Process's onStage closure
+	// fires, so the leading message here decodes into a StageChanged with
+	// an empty Stage field (its JSON has no "stage" key). Skip that one and
+	// collect exactly the 3 real stage events.
 	var gotStages []string
-	for i := 0; i < 3; i++ {
+	for len(gotStages) < 3 {
 		select {
 		case raw := <-stageEvents:
 			var got jobevents.StageChanged
 			if err := json.Unmarshal(raw, &got); err != nil {
 				t.Fatalf("json.Unmarshal(%s): %v", raw, err)
+			}
+			if got.Stage == "" {
+				continue
 			}
 			if got.JobID != pendingJob.ID {
 				t.Errorf("stage event JobID = %d, want %d", got.JobID, pendingJob.ID)
@@ -534,7 +543,7 @@ func TestProcessTick_PublishesStageEventsInOrder(t *testing.T) {
 			}
 			gotStages = append(gotStages, got.Stage)
 		case <-time.After(2 * time.Second):
-			t.Fatalf("did not receive stage event #%d within 2s (got so far: %v)", i+1, gotStages)
+			t.Fatalf("did not receive stage event #%d within 2s (got so far: %v)", len(gotStages)+1, gotStages)
 		}
 	}
 

@@ -237,7 +237,7 @@ func TestRun_PublishSubscribeRoundTrip(t *testing.T) {
 	events, unsubscribe := b.Subscribe(wantUserID)
 	defer unsubscribe()
 
-	want := StatusChanged{JobID: 42, UserID: wantUserID, Status: "processing"}
+	want := StatusChanged{JobID: 42, UserID: wantUserID, Status: "processing", Type: "status"}
 	if err := Publish(ctx, client, want); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
