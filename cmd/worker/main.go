@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,20 +30,21 @@ const defaultProcessingTimeout = 10 * time.Minute
 // pipeline for a job's youtube_url. It is a small, consumer-defined
 // single-method interface (matching the OTPRequester/JobCreator pattern in
 // internal/handler) so processTick's tests can substitute a fake with zero
-// real network calls or yt-dlp/ffmpeg invocations.
+// real network calls or yt-dlp/ffmpeg invocations. onStage is forwarded to
+// the underlying video.Pipeline.Run's onStage callback (spec Scope item 1).
 type Processor interface {
-	Process(ctx context.Context, youtubeURL string) (video.Result, error)
+	Process(ctx context.Context, youtubeURL string, onStage func(string)) (video.Result, error)
 }
 
 // pipelineProcessor adapts a *video.Pipeline (whose method is named Run,
-// per internal/video's Pipeline.Run(ctx, youtubeURL) (Result, error)) to the
-// Processor interface.
+// per internal/video's Pipeline.Run(ctx, youtubeURL, onStage) (Result,
+// error)) to the Processor interface.
 type pipelineProcessor struct {
 	pipeline *video.Pipeline
 }
 
-func (p pipelineProcessor) Process(ctx context.Context, youtubeURL string) (video.Result, error) {
-	return p.pipeline.Run(ctx, youtubeURL)
+func (p pipelineProcessor) Process(ctx context.Context, youtubeURL string, onStage func(string)) (video.Result, error) {
+	return p.pipeline.Run(ctx, youtubeURL, onStage)
 }
 
 // processTick performs one pass over every job snapshotted as "pending" at
@@ -76,7 +79,10 @@ func processTick(ctx context.Context, sqlDB *sql.DB, redisClient *redis.Client, 
 		}
 		publishStatusChanged(ctx, redisClient, processing)
 
-		result, procErr := processor.Process(ctx, processing.YoutubeURL)
+		onStage := func(stage string) {
+			publishStageChanged(ctx, redisClient, processing.ID, processing.UserID, stage)
+		}
+		result, procErr := processor.Process(ctx, processing.YoutubeURL, onStage)
 
 		var final job.Job
 		if procErr == nil {
@@ -125,17 +131,41 @@ func successSummary(result video.Result) string {
 	)
 }
 
-// failureSummary renders a short human-readable failure reason for a job
-// whose processing attempt(s) ended in failure. A too-short/corrupt video
-// (spec edge case 3, video.ErrVideoTooShort) gets a reason text distinct
-// from a generic network/timeout failure, so a coach reading job_summaries
-// can tell "this video can't be analyzed" apart from "a transient error
-// exhausted all retries."
+// failureSummary renders a short, fixed human-readable failure reason for a
+// job whose processing attempt(s) ended in failure — one of a small closed
+// set of category strings, never the raw wrapped Go error text, which can
+// include internal temp-directory paths and unfiltered yt-dlp/ffmpeg stderr
+// (spec Constraints: security; acceptance criterion 11). The complete,
+// unredacted err is still logged via slog by processTick's caller, purely
+// for operator debugging.
+//
+// Categorization is errors.Is-based for the three categories with an
+// existing sentinel (video.ErrCorruptDownload, video.ErrVideoTooShort,
+// context.DeadlineExceeded). Distinguishing "download failed" from
+// "analysis failed" — the two categories with no existing sentinel — has no
+// typed stage-tagging mechanism to hook into: this falls back to matching
+// the "video pipeline: download:"/"video pipeline: analyze:" prefixes
+// runAttempt already wraps every error with (internal/video/video.go). This
+// is a deliberate, smaller-than-planned deviation from plan.md step 10's
+// preferred "typed sentinel/stage tag in internal/video" approach (plan.md
+// Risks #7 anticipated this fallback as an acceptable alternative) —
+// surfaced here per CLAUDE.md's deviation rule; a spec.md amendment is
+// warranted if this lands.
 func failureSummary(err error) string {
-	if errors.Is(err, video.ErrVideoTooShort) {
-		return fmt.Sprintf("video too short or corrupt to analyze: %v", err)
+	switch {
+	case errors.Is(err, video.ErrCorruptDownload):
+		return "downloaded file was incomplete or corrupt"
+	case errors.Is(err, video.ErrVideoTooShort):
+		return "video too short or corrupt to analyze"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "analysis timed out"
+	case strings.Contains(err.Error(), "video pipeline: download:"):
+		return "download failed"
+	case strings.Contains(err.Error(), "video pipeline: analyze:"):
+		return "analysis failed"
+	default:
+		return "processing failed"
 	}
-	return fmt.Sprintf("processing failed: %v", err)
 }
 
 // publishStatusChanged publishes j's new status to jobevents.Channel,
@@ -150,6 +180,71 @@ func publishStatusChanged(ctx context.Context, redisClient *redis.Client, j job.
 	if err != nil {
 		slog.Error("worker: publish job status change failed", "job_id", j.ID, "err", err)
 	}
+}
+
+// publishStageChanged publishes one processing-attempt stage transition to
+// jobevents.Channel, logging (and otherwise ignoring) a publish error for
+// the same reason publishStatusChanged does (spec edge case 6) — a stage
+// event is ephemeral pub/sub only, never a checkpoint, so a dropped publish
+// never affects job.status or correctness.
+func publishStageChanged(ctx context.Context, redisClient *redis.Client, jobID, userID uint64, stage string) {
+	err := jobevents.PublishStage(ctx, redisClient, jobevents.StageChanged{
+		JobID:  jobID,
+		UserID: userID,
+		Stage:  stage,
+	})
+	if err != nil {
+		slog.Error("worker: publish job stage change failed", "job_id", jobID, "stage", stage, "err", err)
+	}
+}
+
+// loadAnalyzerConfig parses MOTION_GRID_CELL_PX/MOTION_THRESHOLD_PER_PAIR/
+// MOTION_MIN_REGION_CELLS/MAX_PARTICIPANTS via getenv (production wires
+// os.Getenv; tests inject a map lookup) into a video.FFMPEGAnalyzer, mirroring
+// main()'s existing PROCESSING_TIMEOUT invalid-value handling (spec edge
+// case 6): an unset or unparseable value logs a warning and falls back to
+// FFMPEGAnalyzer's documented zero-value default for that field, never
+// aborting startup or defaulting the other fields.
+func loadAnalyzerConfig(getenv func(string) string) video.FFMPEGAnalyzer {
+	var cfg video.FFMPEGAnalyzer
+
+	if v := getenv("MOTION_GRID_CELL_PX"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			slog.Error("worker: invalid MOTION_GRID_CELL_PX, using default", "value", v, "err", err)
+		} else {
+			cfg.GridCellPx = n
+		}
+	}
+
+	if v := getenv("MOTION_THRESHOLD_PER_PAIR"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			slog.Error("worker: invalid MOTION_THRESHOLD_PER_PAIR, using default", "value", v, "err", err)
+		} else {
+			cfg.MotionThresholdPerPair = f
+		}
+	}
+
+	if v := getenv("MOTION_MIN_REGION_CELLS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			slog.Error("worker: invalid MOTION_MIN_REGION_CELLS, using default", "value", v, "err", err)
+		} else {
+			cfg.MinRegionCells = n
+		}
+	}
+
+	if v := getenv("MAX_PARTICIPANTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			slog.Error("worker: invalid MAX_PARTICIPANTS, using default", "value", v, "err", err)
+		} else {
+			cfg.MaxParticipants = n
+		}
+	}
+
+	return cfg
 }
 
 func runLoop(ctx context.Context, sqlDB *sql.DB, redisClient *redis.Client, processor Processor) {
@@ -198,8 +293,9 @@ func main() {
 
 	pipeline := &video.Pipeline{
 		Downloader:  video.YTDLPDownloader{},
+		Validator:   video.FFProbeValidator{},
 		Prober:      video.FFProbeProber{},
-		Analyzer:    video.FFMPEGAnalyzer{},
+		Analyzer:    loadAnalyzerConfig(os.Getenv),
 		BackoffBase: 1 * time.Second,
 		Timeout:     processingTimeout,
 	}

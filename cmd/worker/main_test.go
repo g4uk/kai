@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/g4uk/kai/internal/db"
 	"github.com/g4uk/kai/internal/job"
+	"github.com/g4uk/kai/internal/jobevents"
 	"github.com/g4uk/kai/internal/redisconn"
 	"github.com/g4uk/kai/internal/user"
 	"github.com/g4uk/kai/internal/video"
@@ -58,21 +61,33 @@ import (
 // Non-scope's "crash/restart recovery ... is a future spec, not this one."
 // ----------------------------------------------------------------------------
 
-// fakeProcessor is a test double for the not-yet-existing Processor
-// interface: it scripts a single (video.Result, error) outcome and records
-// every youtubeURL it was called with, so tests can assert both "was it
-// called" and "with what."
+// fakeProcessor is a test double for the Processor interface: it scripts a
+// single (video.Result, error) outcome and records every youtubeURL it was
+// called with, so tests can assert both "was it called" and "with what."
+//
+// stages (specs/video-processing-improvements/plan.md step 9a) is an
+// optional list of stage names this fake reports via the onStage callback,
+// in order, before returning its scripted result — simulating how the real
+// video.Pipeline reports "downloading"/"probing"/"analyzing" progress, so
+// tests can assert processTick wires onStage into a real
+// jobevents.PublishStage call without depending on video.Pipeline itself.
 type fakeProcessor struct {
 	result video.Result
 	err    error
+	stages []string
 
 	calls   int
 	gotURLs []string
 }
 
-func (f *fakeProcessor) Process(_ context.Context, youtubeURL string) (video.Result, error) {
+func (f *fakeProcessor) Process(_ context.Context, youtubeURL string, onStage func(string)) (video.Result, error) {
 	f.calls++
 	f.gotURLs = append(f.gotURLs, youtubeURL)
+	for _, stage := range f.stages {
+		if onStage != nil {
+			onStage(stage)
+		}
+	}
 	return f.result, f.err
 }
 
@@ -441,5 +456,207 @@ func TestProcessTick_RedisUnavailableStillAdvancesDBStatus(t *testing.T) {
 	// succeeds.
 	if gotStatus != "done" {
 		t.Errorf("pendingJob status after processTick with Redis unavailable = %q, want %q", gotStatus, "done")
+	}
+}
+
+// ----------------------------------------------------------------------------
+// TDD RED PHASE NOTE (specs/video-processing-improvements/plan.md step 9)
+//
+// The tests below drive three changes to cmd/worker/main.go that don't
+// exist yet, so this package fails to compile until main.go is updated
+// (expected, correct red state):
+//
+//   - The Processor interface's Process method gains an onStage func(string)
+//     parameter: Process(ctx context.Context, youtubeURL string, onStage
+//     func(string)) (video.Result, error). processTick must wire a closure
+//     into it that publishes a jobevents.StageChanged event (via
+//     jobevents.PublishStage) per stage, so a subscribed SSE client sees one
+//     stage event per transition (spec acceptance criteria 1/2).
+//   - failureSummary switches on new video-package error categories
+//     (video.ErrCorruptDownload from plan.md step 3/4, plus whatever
+//     stage-tagging mechanism step 10 introduces to distinguish "download
+//     failed" from "analysis failed") instead of interpolating the raw
+//     error text (spec acceptance criterion 11).
+//   - A new loadAnalyzerConfig(getenv func(string) string) video.FFMPEGAnalyzer
+//     helper parses MOTION_GRID_CELL_PX/MOTION_THRESHOLD_PER_PAIR/
+//     MOTION_MIN_REGION_CELLS/MAX_PARTICIPANTS, mirroring main()'s existing
+//     PROCESSING_TIMEOUT invalid-value handling.
+// ----------------------------------------------------------------------------
+
+// TestProcessTick_PublishesStageEventsInOrder covers plan.md step 9a: the
+// Processor interface's Process gains an onStage func(string) parameter,
+// and processTick must wire a closure into it that publishes a
+// jobevents.StageChanged event (via jobevents.PublishStage) for each stage
+// the Processor reports, in order, for a pending job.
+func TestProcessTick_PublishesStageEventsInOrder(t *testing.T) {
+	sqlDB := testDB(t)
+	redisClient := testRedisClient(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	userID := mustCreateUser(t, sqlDB, "+15559997010")
+	url := "https://www.youtube.com/watch?v=process-tick-stage-events-1"
+
+	pendingJob, err := job.Create(ctx, sqlDB, userID, url)
+	if err != nil {
+		t.Fatalf("Create pending job: %v", err)
+	}
+	cleanupJob(t, sqlDB, pendingJob.ID)
+
+	b := &jobevents.Broadcaster{}
+	runDone := make(chan error, 1)
+	go func() { runDone <- b.Run(ctx, redisClient) }()
+	time.Sleep(200 * time.Millisecond)
+
+	stageEvents, unsubscribe := b.Subscribe(userID)
+	defer unsubscribe()
+
+	processor := &fakeProcessor{
+		stages: []string{"downloading", "probing", "analyzing"},
+		result: video.Result{Metadata: video.Metadata{Duration: 1, Width: 1, Height: 1, FPS: 1}},
+	}
+
+	processTick(ctx, sqlDB, redisClient, processor)
+
+	var gotStages []string
+	for i := 0; i < 3; i++ {
+		select {
+		case raw := <-stageEvents:
+			var got jobevents.StageChanged
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("json.Unmarshal(%s): %v", raw, err)
+			}
+			if got.JobID != pendingJob.ID {
+				t.Errorf("stage event JobID = %d, want %d", got.JobID, pendingJob.ID)
+			}
+			if got.UserID != userID {
+				t.Errorf("stage event UserID = %d, want %d", got.UserID, userID)
+			}
+			gotStages = append(gotStages, got.Stage)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("did not receive stage event #%d within 2s (got so far: %v)", i+1, gotStages)
+		}
+	}
+
+	want := []string{"downloading", "probing", "analyzing"}
+	if !reflect.DeepEqual(gotStages, want) {
+		t.Errorf("stage events received = %v, want %v", gotStages, want)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(1 * time.Second):
+	}
+}
+
+// TestFailureSummary_CategorizesWithoutLeakingRawErrorText covers spec
+// acceptance criterion 11 / plan.md step 9b: failureSummary categorizes the
+// pipeline error into one of a small fixed set of human-readable reasons,
+// across all 5 categories, and the returned text never contains the
+// original error's raw text (embedding a unique marker string, mirroring
+// what a real internal temp path or subprocess stderr snippet would leak).
+func TestFailureSummary_CategorizesWithoutLeakingRawErrorText(t *testing.T) {
+	const marker = "SECRET_TMP_PATH_MARKER"
+
+	cases := []struct {
+		name       string
+		err        error
+		wantSubstr string
+	}{
+		{
+			name:       "corrupt download",
+			err:        fmt.Errorf("video pipeline: download: %w: %s", video.ErrCorruptDownload, marker),
+			wantSubstr: "incomplete or corrupt",
+		},
+		{
+			name:       "too short video",
+			err:        fmt.Errorf("video pipeline: attempt 1 failed (non-retryable): %w: %s", video.ErrVideoTooShort, marker),
+			wantSubstr: "too short or corrupt to analyze",
+		},
+		{
+			name:       "analysis timed out",
+			err:        fmt.Errorf("video pipeline: analyze: %w: %s", context.DeadlineExceeded, marker),
+			wantSubstr: "timed out",
+		},
+		{
+			name:       "generic download failure",
+			err:        fmt.Errorf("video pipeline: download: %s: %w", marker, errors.New("connection reset")),
+			wantSubstr: "download failed",
+		},
+		{
+			name:       "generic analyze failure",
+			err:        fmt.Errorf("video pipeline: analyze: %s: %w", marker, errors.New("ffmpeg exited 1")),
+			wantSubstr: "analysis failed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := failureSummary(tc.err)
+
+			if !strings.Contains(got, tc.wantSubstr) {
+				t.Errorf("failureSummary(%v) = %q, want it to contain %q", tc.err, got, tc.wantSubstr)
+			}
+			if strings.Contains(got, marker) {
+				t.Errorf("failureSummary(%v) = %q, leaked the raw error text marker %q", tc.err, got, marker)
+			}
+		})
+	}
+}
+
+// TestLoadAnalyzerConfig covers plan.md step 9c: loadAnalyzerConfig parses
+// MOTION_GRID_CELL_PX/MOTION_THRESHOLD_PER_PAIR/MOTION_MIN_REGION_CELLS/
+// MAX_PARTICIPANTS from an injected getenv func, falling back to
+// video.FFMPEGAnalyzer's documented zero-value defaults when a var is unset
+// or unparseable — mirroring main()'s existing PROCESSING_TIMEOUT
+// invalid-value handling (spec edge case 6).
+func TestLoadAnalyzerConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want video.FFMPEGAnalyzer
+	}{
+		{
+			name: "all unset uses zero-value defaults",
+			env:  map[string]string{},
+			want: video.FFMPEGAnalyzer{},
+		},
+		{
+			name: "all set to valid non-default values",
+			env: map[string]string{
+				"MOTION_GRID_CELL_PX":       "48",
+				"MOTION_THRESHOLD_PER_PAIR": "22.5",
+				"MOTION_MIN_REGION_CELLS":   "3",
+				"MAX_PARTICIPANTS":          "1",
+			},
+			want: video.FFMPEGAnalyzer{
+				GridCellPx:             48,
+				MotionThresholdPerPair: 22.5,
+				MinRegionCells:         3,
+				MaxParticipants:        1,
+			},
+		},
+		{
+			name: "all invalid/unparseable falls back to zero-value defaults",
+			env: map[string]string{
+				"MOTION_GRID_CELL_PX":       "not-an-int",
+				"MOTION_THRESHOLD_PER_PAIR": "not-a-float",
+				"MOTION_MIN_REGION_CELLS":   "not-an-int",
+				"MAX_PARTICIPANTS":          "not-an-int",
+			},
+			want: video.FFMPEGAnalyzer{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			getenv := func(key string) string { return tc.env[key] }
+
+			got := loadAnalyzerConfig(getenv)
+			if got != tc.want {
+				t.Errorf("loadAnalyzerConfig(%v) = %+v, want %+v", tc.env, got, tc.want)
+			}
+		})
 	}
 }
