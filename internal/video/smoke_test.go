@@ -28,7 +28,7 @@ func TestSmoke_RealPipeline(t *testing.T) {
 
 	// "Me at the zoo" (jNQXAC9IVRw) — YouTube's first-ever upload, ~19s,
 	// stable and unlikely to be taken down; a good fixed short test video.
-	result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=jNQXAC9IVRw")
+	result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=jNQXAC9IVRw", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

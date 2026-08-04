@@ -75,6 +75,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -272,7 +274,7 @@ func TestPipeline_Run(t *testing.T) {
 				TempDirRoot: tempRoot,
 			}
 
-			result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=pipeline-test")
+			result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=pipeline-test", nil)
 
 			if tc.wantErr {
 				if err == nil {
@@ -354,7 +356,7 @@ func TestPipeline_Run_NonRetryableAnalyzeErrorFailsOnFirstAttempt(t *testing.T) 
 		TempDirRoot: tempRoot,
 	}
 
-	result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=too-short")
+	result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=too-short", nil)
 
 	if err == nil {
 		t.Fatal("Run: got nil error, want non-nil (video too short to analyze)")
@@ -419,7 +421,7 @@ func TestPipeline_Run_PerAttemptTimeoutExceeded(t *testing.T) {
 	}
 
 	start := time.Now()
-	result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=pipeline-timeout")
+	result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=pipeline-timeout", nil)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -456,4 +458,360 @@ func TestPipeline_Run_PerAttemptTimeoutExceeded(t *testing.T) {
 	}
 
 	assertTempDirCleanedUp(t, tempRoot)
+}
+
+// ----------------------------------------------------------------------------
+// TDD RED PHASE NOTE (specs/video-processing-improvements/plan.md step 3)
+//
+// The tests below exercise a new download-integrity validation step that
+// doesn't exist yet, so this package fails to compile until video.go/a new
+// validate.go define:
+//
+//	var ErrCorruptDownload = errors.New(...)
+//
+//	type Validator interface {
+//	    Validate(ctx context.Context, videoPath string) error
+//	}
+//
+// ...and Pipeline gains a `Validator Validator` field. runAttempt calls
+// Validator.Validate right after Download succeeds, before Probe. Unlike
+// ErrVideoTooShort, a Validator failure does NOT short-circuit the retry
+// loop -- it's retried under the normal 3-attempt/backoff policy, since a
+// truncated/incomplete download is typically a transient network issue
+// (spec Scope item 2).
+// ----------------------------------------------------------------------------
+
+// fakeValidator scripts one error per call, indexed by call order (nil on a
+// given index means that call succeeds). Mirrors fakeProber/fakeAnalyzer's
+// "no scripted result for this call" guard.
+type fakeValidator struct {
+	calls int
+	errs  []error
+}
+
+func (f *fakeValidator) Validate(_ context.Context, _ string) error {
+	i := f.calls
+	f.calls++
+	if i >= len(f.errs) {
+		return errors.New("fakeValidator: no scripted result for this call")
+	}
+	return f.errs[i]
+}
+
+// TestPipeline_Run_CorruptDownloadRetriedThenSucceeds covers spec acceptance
+// criterion 3 / plan.md step 3a: a Validate failure with ErrCorruptDownload
+// on attempt 1, succeeding on attempt 2, must be retried (not
+// short-circuited like ErrVideoTooShort) -- Run reaches success after
+// exactly 2 attempts with the usual backoff between them.
+func TestPipeline_Run_CorruptDownloadRetriedThenSucceeds(t *testing.T) {
+	const base = 1 * time.Millisecond
+	tempRoot := t.TempDir()
+	var sleeps []time.Duration
+
+	downloader := &fakeDownloader{
+		paths: []string{"/tmp/attempt-0/video.mp4", "/tmp/attempt-1/video.mp4"},
+		errs:  []error{nil, nil},
+	}
+	validator := &fakeValidator{errs: []error{ErrCorruptDownload, nil}}
+	prober := &fakeProber{metadata: Metadata{Duration: 1, Width: 1, Height: 1, FPS: 1}}
+	analyzer := &fakeAnalyzer{result: AnalysisResult{Participants: []ParticipantResult{
+		{Label: "Participant 1", ActivityScore: 1},
+	}}}
+
+	p := &Pipeline{
+		Downloader:  downloader,
+		Validator:   validator,
+		Prober:      prober,
+		Analyzer:    analyzer,
+		BackoffBase: base,
+		Timeout:     1 * time.Second,
+		Sleep:       recordingSleep(&sleeps),
+		TempDirRoot: tempRoot,
+	}
+
+	result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=corrupt-then-ok", nil)
+	if err != nil {
+		t.Fatalf("Run: unexpected error: %v", err)
+	}
+
+	if downloader.calls != 2 {
+		t.Errorf("downloader.calls = %d, want 2", downloader.calls)
+	}
+	if validator.calls != 2 {
+		t.Errorf("validator.calls = %d, want 2", validator.calls)
+	}
+	if prober.calls != 1 {
+		t.Errorf("prober.calls = %d, want 1 (only the attempt that passes Validate reaches Probe)", prober.calls)
+	}
+	if len(result.Participants) != 1 {
+		t.Errorf("len(result.Participants) = %d, want 1", len(result.Participants))
+	}
+
+	wantBackoffs := []time.Duration{base}
+	if len(sleeps) != len(wantBackoffs) {
+		t.Fatalf("len(sleeps) = %d (%v), want %d (%v)", len(sleeps), sleeps, len(wantBackoffs), wantBackoffs)
+	}
+	for i, want := range wantBackoffs {
+		if sleeps[i] != want {
+			t.Errorf("sleeps[%d] = %v, want %v", i, sleeps[i], want)
+		}
+	}
+
+	assertTempDirCleanedUp(t, tempRoot)
+}
+
+// TestPipeline_Run_CorruptDownloadAllAttemptsFail covers spec acceptance
+// criterion 4 / plan.md step 3b: when all 3 attempts fail Validate with
+// ErrCorruptDownload, Run fails with an error satisfying
+// errors.Is(err, ErrCorruptDownload), distinguishable from ErrVideoTooShort.
+func TestPipeline_Run_CorruptDownloadAllAttemptsFail(t *testing.T) {
+	const base = 1 * time.Millisecond
+	tempRoot := t.TempDir()
+	var sleeps []time.Duration
+
+	downloader := &fakeDownloader{
+		paths: []string{"/tmp/a0/video.mp4", "/tmp/a1/video.mp4", "/tmp/a2/video.mp4"},
+		errs:  []error{nil, nil, nil},
+	}
+	validator := &fakeValidator{errs: []error{ErrCorruptDownload, ErrCorruptDownload, ErrCorruptDownload}}
+	prober := &fakeProber{metadata: Metadata{Duration: 1, Width: 1, Height: 1, FPS: 1}}
+	analyzer := &fakeAnalyzer{result: AnalysisResult{}}
+
+	p := &Pipeline{
+		Downloader:  downloader,
+		Validator:   validator,
+		Prober:      prober,
+		Analyzer:    analyzer,
+		BackoffBase: base,
+		Timeout:     1 * time.Second,
+		Sleep:       recordingSleep(&sleeps),
+		TempDirRoot: tempRoot,
+	}
+
+	result, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=always-corrupt", nil)
+	if err == nil {
+		t.Fatal("Run: got nil error, want non-nil (every attempt's download was corrupt)")
+	}
+	if !errors.Is(err, ErrCorruptDownload) {
+		t.Errorf("Run: err = %v, want errors.Is(err, ErrCorruptDownload)", err)
+	}
+	if errors.Is(err, ErrVideoTooShort) {
+		t.Errorf("Run: err = %v unexpectedly also matches ErrVideoTooShort — must stay distinguishable", err)
+	}
+	if len(result.Participants) != 0 {
+		t.Errorf("len(result.Participants) = %d, want 0", len(result.Participants))
+	}
+
+	if downloader.calls != 3 {
+		t.Errorf("downloader.calls = %d, want 3 (a corrupt download is retried like a transient failure, not short-circuited)", downloader.calls)
+	}
+	if validator.calls != 3 {
+		t.Errorf("validator.calls = %d, want 3", validator.calls)
+	}
+	if prober.calls != 0 {
+		t.Errorf("prober.calls = %d, want 0 (Probe never runs after a failed Validate)", prober.calls)
+	}
+
+	wantBackoffs := []time.Duration{base, 2 * base}
+	if len(sleeps) != len(wantBackoffs) {
+		t.Fatalf("len(sleeps) = %d (%v), want %d (%v)", len(sleeps), sleeps, len(wantBackoffs), wantBackoffs)
+	}
+	for i, want := range wantBackoffs {
+		if sleeps[i] != want {
+			t.Errorf("sleeps[%d] = %v, want %v", i, sleeps[i], want)
+		}
+	}
+
+	assertTempDirCleanedUp(t, tempRoot)
+}
+
+// callOrderRecorder records the name of each pipeline step as it's invoked,
+// so TestPipeline_Run_ValidateCalledAfterDownloadBeforeProbe can assert
+// Validate's position in the call sequence, independent of timing.
+type callOrderRecorder struct {
+	mu    sync.Mutex
+	order []string
+}
+
+func (r *callOrderRecorder) record(step string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.order = append(r.order, step)
+}
+
+type orderedDownloader struct {
+	recorder *callOrderRecorder
+	path     string
+}
+
+func (d orderedDownloader) Download(_ context.Context, _, _ string) (string, error) {
+	d.recorder.record("download")
+	return d.path, nil
+}
+
+type orderedValidator struct {
+	recorder *callOrderRecorder
+}
+
+func (v orderedValidator) Validate(_ context.Context, _ string) error {
+	v.recorder.record("validate")
+	return nil
+}
+
+type orderedProber struct {
+	recorder *callOrderRecorder
+	metadata Metadata
+}
+
+func (p orderedProber) Probe(_ context.Context, _ string) (Metadata, error) {
+	p.recorder.record("probe")
+	return p.metadata, nil
+}
+
+// TestPipeline_Run_ValidateCalledAfterDownloadBeforeProbe covers plan.md
+// step 3c: Validate is called after Downloader.Download and before
+// Prober.Probe, on every successful attempt.
+func TestPipeline_Run_ValidateCalledAfterDownloadBeforeProbe(t *testing.T) {
+	recorder := &callOrderRecorder{}
+	var sleeps []time.Duration
+
+	p := &Pipeline{
+		Downloader:  orderedDownloader{recorder: recorder, path: "/tmp/order/video.mp4"},
+		Validator:   orderedValidator{recorder: recorder},
+		Prober:      orderedProber{recorder: recorder, metadata: Metadata{Duration: 1, Width: 1, Height: 1, FPS: 1}},
+		Analyzer:    &fakeAnalyzer{result: AnalysisResult{}},
+		BackoffBase: 1 * time.Millisecond,
+		Timeout:     1 * time.Second,
+		Sleep:       recordingSleep(&sleeps),
+		TempDirRoot: t.TempDir(),
+	}
+
+	if _, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=call-order", nil); err != nil {
+		t.Fatalf("Run: unexpected error: %v", err)
+	}
+
+	want := []string{"download", "validate", "probe"}
+	if !reflect.DeepEqual(recorder.order, want) {
+		t.Errorf("call order = %v, want %v", recorder.order, want)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// TDD RED PHASE NOTE (specs/video-processing-improvements/plan.md step 7)
+//
+// The tests below drive a new onStage callback parameter on Pipeline.Run,
+// which doesn't exist yet:
+//
+//	func (p *Pipeline) Run(ctx context.Context, youtubeURL string, onStage func(string)) (Result, error)
+//
+// A nil onStage must not panic (existing/earlier tests in this file that
+// don't care about stage progress will eventually be migrated to pass nil,
+// but that migration is a separate, later step — not part of this red
+// phase). onStage is called "downloading" before Download, "probing" after
+// Validate succeeds and before Probe, "analyzing" before Analyze.
+// ----------------------------------------------------------------------------
+
+// TestPipeline_Run_OnStageCallbackOrderOnSuccess covers spec acceptance
+// criteria 1/2 and plan.md step 7: on a successful attempt, onStage is
+// called exactly 3 times, in stage order.
+func TestPipeline_Run_OnStageCallbackOrderOnSuccess(t *testing.T) {
+	downloader := &fakeDownloader{paths: []string{"/tmp/stage/video.mp4"}, errs: []error{nil}}
+	validator := &fakeValidator{errs: []error{nil}}
+	prober := &fakeProber{metadata: Metadata{Duration: 1, Width: 1, Height: 1, FPS: 1}}
+	analyzer := &fakeAnalyzer{result: AnalysisResult{}}
+	var sleeps []time.Duration
+
+	p := &Pipeline{
+		Downloader:  downloader,
+		Validator:   validator,
+		Prober:      prober,
+		Analyzer:    analyzer,
+		BackoffBase: 1 * time.Millisecond,
+		Timeout:     1 * time.Second,
+		Sleep:       recordingSleep(&sleeps),
+		TempDirRoot: t.TempDir(),
+	}
+
+	var stages []string
+	_, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=stage-order", func(stage string) {
+		stages = append(stages, stage)
+	})
+	if err != nil {
+		t.Fatalf("Run: unexpected error: %v", err)
+	}
+
+	want := []string{"downloading", "probing", "analyzing"}
+	if !reflect.DeepEqual(stages, want) {
+		t.Errorf("onStage calls = %v, want %v", stages, want)
+	}
+}
+
+// TestPipeline_Run_OnStageNilIsSafe covers plan.md step 7's nil-safety
+// requirement: passing a nil onStage must not panic.
+func TestPipeline_Run_OnStageNilIsSafe(t *testing.T) {
+	downloader := &fakeDownloader{paths: []string{"/tmp/stage-nil/video.mp4"}, errs: []error{nil}}
+	validator := &fakeValidator{errs: []error{nil}}
+	prober := &fakeProber{metadata: Metadata{Duration: 1, Width: 1, Height: 1, FPS: 1}}
+	analyzer := &fakeAnalyzer{result: AnalysisResult{}}
+	var sleeps []time.Duration
+
+	p := &Pipeline{
+		Downloader:  downloader,
+		Validator:   validator,
+		Prober:      prober,
+		Analyzer:    analyzer,
+		BackoffBase: 1 * time.Millisecond,
+		Timeout:     1 * time.Second,
+		Sleep:       recordingSleep(&sleeps),
+		TempDirRoot: t.TempDir(),
+	}
+
+	if _, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=stage-nil", nil); err != nil {
+		t.Fatalf("Run: unexpected error with nil onStage: %v", err)
+	}
+}
+
+// TestPipeline_Run_OnStageStopsAfterDownloadFailure covers plan.md step 7:
+// a failed attempt (Downloader fails) calls onStage("downloading") once per
+// attempt, but never "probing"/"analyzing" — those stages are never reached.
+func TestPipeline_Run_OnStageStopsAfterDownloadFailure(t *testing.T) {
+	downloadErr := errors.New("simulated download failure")
+	downloader := &fakeDownloader{
+		paths: []string{"", "", ""},
+		errs:  []error{downloadErr, downloadErr, downloadErr},
+	}
+	prober := &fakeProber{metadata: Metadata{Duration: 1, Width: 1, Height: 1, FPS: 1}}
+	analyzer := &fakeAnalyzer{result: AnalysisResult{}}
+	var sleeps []time.Duration
+
+	p := &Pipeline{
+		Downloader:  downloader,
+		Prober:      prober,
+		Analyzer:    analyzer,
+		BackoffBase: 1 * time.Millisecond,
+		Timeout:     1 * time.Second,
+		Sleep:       recordingSleep(&sleeps),
+		TempDirRoot: t.TempDir(),
+	}
+
+	var stages []string
+	_, err := p.Run(context.Background(), "https://www.youtube.com/watch?v=stage-fail", func(stage string) {
+		stages = append(stages, stage)
+	})
+	if err == nil {
+		t.Fatal("Run: got nil error, want non-nil (every download attempt fails)")
+	}
+
+	downloadingCount := 0
+	for _, s := range stages {
+		switch s {
+		case "downloading":
+			downloadingCount++
+		case "probing", "analyzing":
+			t.Errorf("onStage recorded %q after a download failure; want only %q", s, "downloading")
+		}
+	}
+	if downloadingCount != 3 {
+		t.Errorf(`onStage called with "downloading" %d times, want 3 (once per failed attempt)`, downloadingCount)
+	}
 }

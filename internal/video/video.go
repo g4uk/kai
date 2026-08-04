@@ -55,6 +55,13 @@ type Prober interface {
 	Probe(ctx context.Context, videoPath string) (Metadata, error)
 }
 
+// Validator confirms an already-downloaded video file is complete/usable
+// before it's handed to Prober/Analyzer (spec Scope item 2). A failure here
+// is expected to be a distinct, retryable category — see ErrCorruptDownload.
+type Validator interface {
+	Validate(ctx context.Context, videoPath string) error
+}
+
 // Analyzer samples frames from videoPath (using tmpDir for any extracted
 // frame files) and detects participants/activity scores.
 type Analyzer interface {
@@ -71,6 +78,7 @@ const maxAttempts = 3
 // directory before returning from that attempt.
 type Pipeline struct {
 	Downloader Downloader
+	Validator  Validator
 	Prober     Prober
 	Analyzer   Analyzer
 
@@ -97,7 +105,16 @@ type Pipeline struct {
 // to maxAttempts times with exponential backoff between failed attempts
 // (spec Scope: "Retry with exponential backoff"). It returns the first
 // successful attempt's Result, or a wrapped error if every attempt fails.
-func (p *Pipeline) Run(ctx context.Context, youtubeURL string) (Result, error) {
+// onStage, if non-nil, is called with "downloading" before Download,
+// "probing" after Validate succeeds and before Probe, and "analyzing"
+// before Analyze, once per attempt — a nil onStage is safe (defaults to a
+// no-op) so callers that don't care about stage progress don't need a guard
+// (spec Scope item 1).
+func (p *Pipeline) Run(ctx context.Context, youtubeURL string, onStage func(string)) (Result, error) {
+	if onStage == nil {
+		onStage = func(string) {}
+	}
+
 	sleep := p.Sleep
 	if sleep == nil {
 		sleep = time.Sleep
@@ -107,7 +124,7 @@ func (p *Pipeline) Run(ctx context.Context, youtubeURL string) (Result, error) {
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		result, err := p.runAttempt(ctx, youtubeURL)
+		result, err := p.runAttempt(ctx, youtubeURL, onStage)
 		if err == nil {
 			return result, nil
 		}
@@ -144,12 +161,13 @@ func (p *Pipeline) durationOrDefault() time.Duration {
 	return p.BackoffBase
 }
 
-// runAttempt performs one full download -> probe -> analyze attempt, bounded
-// by a per-attempt context.WithTimeout, inside a freshly created temp
-// directory that is removed before this function returns on every exit path
-// — success, failure, timeout, or panic (spec Constraints: "Resource
-// management").
-func (p *Pipeline) runAttempt(ctx context.Context, youtubeURL string) (result Result, err error) {
+// runAttempt performs one full download -> validate -> probe -> analyze
+// attempt, bounded by a per-attempt context.WithTimeout, inside a freshly
+// created temp directory that is removed before this function returns on
+// every exit path — success, failure, timeout, or panic (spec Constraints:
+// "Resource management"). onStage is called (never nil — Run defaults it)
+// as each stage begins.
+func (p *Pipeline) runAttempt(ctx context.Context, youtubeURL string, onStage func(string)) (result Result, err error) {
 	tempDir, mkErr := os.MkdirTemp(p.TempDirRoot, "video-job-*")
 	if mkErr != nil {
 		return Result{}, fmt.Errorf("video pipeline: create temp dir: %w", mkErr)
@@ -168,16 +186,30 @@ func (p *Pipeline) runAttempt(ctx context.Context, youtubeURL string) (result Re
 	attemptCtx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 
+	onStage("downloading")
 	videoPath, dlErr := p.Downloader.Download(attemptCtx, youtubeURL, tempDir)
 	if dlErr != nil {
 		return Result{}, fmt.Errorf("video pipeline: download: %w", dlErr)
 	}
 
+	if p.Validator != nil {
+		if valErr := p.Validator.Validate(attemptCtx, videoPath); valErr != nil {
+			// Unlike ErrVideoTooShort, a Validator failure is NOT
+			// short-circuited by Run's retry loop — a truncated/incomplete
+			// download is typically a transient network issue (spec Scope
+			// item 2), so it flows through the normal per-attempt
+			// retry/backoff path below.
+			return Result{}, fmt.Errorf("video pipeline: validate: %w", valErr)
+		}
+	}
+
+	onStage("probing")
 	metadata, probeErr := p.Prober.Probe(attemptCtx, videoPath)
 	if probeErr != nil {
 		return Result{}, fmt.Errorf("video pipeline: probe: %w", probeErr)
 	}
 
+	onStage("analyzing")
 	analysis, analyzeErr := p.Analyzer.Analyze(attemptCtx, videoPath, tempDir)
 	if analyzeErr != nil {
 		return Result{}, fmt.Errorf("video pipeline: analyze: %w", analyzeErr)
