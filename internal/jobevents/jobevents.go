@@ -22,10 +22,18 @@ type StatusChanged struct {
 	JobID  uint64 `json:"job_id"`
 	UserID uint64 `json:"user_id"`
 	Status string `json:"status"`
+	// Type discriminates this payload shape from StageChanged on Channel, so
+	// internal/handler/jobs_stream.go can pick the right SSE event name
+	// without fully decoding either shape (spec Scope item 1). Publish
+	// always sets this to "status".
+	Type string `json:"type"`
 }
 
-// Publish marshals event and publishes it to Channel via client.
+// Publish marshals event and publishes it to Channel via client, setting
+// event.Type to "status" regardless of what the caller passed in.
 func Publish(ctx context.Context, client *redis.Client, event StatusChanged) error {
+	event.Type = "status"
+
 	raw, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("jobevents publish: marshal: %w", err)
@@ -33,6 +41,37 @@ func Publish(ctx context.Context, client *redis.Client, event StatusChanged) err
 
 	if err := client.Publish(ctx, Channel, raw).Err(); err != nil {
 		return fmt.Errorf("jobevents publish: %w", err)
+	}
+
+	return nil
+}
+
+// StageChanged is the payload published to Channel whenever a processing
+// attempt moves from one pipeline stage to the next (spec Scope item 1) —
+// ephemeral pub/sub only, never persisted, and never a substitute for
+// StatusChanged's pending/processing/done/failed transitions.
+type StageChanged struct {
+	JobID  uint64 `json:"job_id"`
+	UserID uint64 `json:"user_id"`
+	Stage  string `json:"stage"`
+	// Type discriminates this payload shape from StatusChanged on Channel
+	// (see StatusChanged.Type). PublishStage always sets this to "stage".
+	Type string `json:"type"`
+}
+
+// PublishStage marshals event and publishes it to the same Channel
+// StatusChanged events use (no new Redis channel), setting event.Type to
+// "stage" regardless of what the caller passed in.
+func PublishStage(ctx context.Context, client *redis.Client, event StageChanged) error {
+	event.Type = "stage"
+
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("jobevents publish stage: marshal: %w", err)
+	}
+
+	if err := client.Publish(ctx, Channel, raw).Err(); err != nil {
+		return fmt.Errorf("jobevents publish stage: %w", err)
 	}
 
 	return nil
