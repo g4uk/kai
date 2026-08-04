@@ -35,25 +35,59 @@ type FFMPEGAnalyzer struct {
 	// Zero defaults to 1 (one frame per second), bounding decode work
 	// independent of video length/resolution (plan.md Risks #3).
 	SampleFPS float64
+
+	// GridCellPx is the side length (in pixels) of each cell in the coarse
+	// grid used for motion-region detection. Zero/unset defaults to today's
+	// hardcoded 32px (spec criterion 6), configurable via MOTION_GRID_CELL_PX
+	// (spec criterion 5) so an operator can retune sensitivity without a
+	// rebuild.
+	GridCellPx int
+
+	// MotionThresholdPerPair is the minimum average per-pixel luma
+	// difference (0-255 scale) a grid cell must exceed, per single
+	// frame-to-frame pair, to be considered active in that pair. Zero/unset
+	// defaults to today's hardcoded 15.0, configurable via
+	// MOTION_THRESHOLD_PER_PAIR.
+	MotionThresholdPerPair float64
+
+	// MinRegionCells is the minimum number of connected moving cells for a
+	// region to count as a distinct participant, filtering out single-cell
+	// noise/flicker. Zero/unset defaults to today's hardcoded 2, configurable
+	// via MOTION_MIN_REGION_CELLS.
+	MinRegionCells int
+
+	// MaxParticipants caps how many top-scoring (by persistence, spec
+	// criterion 7) detected regions are kept as participants. Zero/unset
+	// defaults to 2 (spec criterion 10 — an intentional behavior change from
+	// today's "keep every detected region"), configurable via
+	// MAX_PARTICIPANTS for non-standard footage.
+	MaxParticipants int
 }
 
 const (
 	// gridCell is the side length (in pixels) of each cell in the coarse grid
-	// used for motion-region detection.
+	// used for motion-region detection, when FFMPEGAnalyzer.GridCellPx is
+	// zero/unset.
 	gridCell = 32
-	// motionThreshold is the minimum average per-pixel luma difference
-	// (0-255 scale), summed across every consecutive frame pair, for a grid
-	// cell to be considered part of a moving region.
+	// motionThresholdPerPair is the minimum average per-pixel luma
+	// difference (0-255 scale) a grid cell must exceed, per single
+	// frame-to-frame pair, to be considered active in that pair, when
+	// FFMPEGAnalyzer.MotionThresholdPerPair is zero/unset.
 	motionThresholdPerPair = 15.0
 	// minRegionCells is the minimum number of connected moving cells for a
-	// region to count as a distinct participant, filtering out single-cell
-	// noise/flicker.
+	// region to count as a distinct participant, when
+	// FFMPEGAnalyzer.MinRegionCells is zero/unset.
 	minRegionCells = 2
+	// defaultMaxParticipants is the number of top-persistence regions kept
+	// when FFMPEGAnalyzer.MaxParticipants is zero/unset (spec criterion 10:
+	// "2 fighters" is the default, not "keep every detected region").
+	defaultMaxParticipants = 2
 )
 
 // Analyze extracts frames from videoPath into tmpDir via ffmpeg, decodes
 // them, and detects participants/activity scores via frame-to-frame
-// pixel-diff motion detection.
+// pixel-diff motion detection, using a's configured (or defaulted)
+// thresholds.
 func (a FFMPEGAnalyzer) Analyze(ctx context.Context, videoPath, tmpDir string) (AnalysisResult, error) {
 	sampleFPS := a.SampleFPS
 	if sampleFPS <= 0 {
@@ -76,15 +110,24 @@ func (a FFMPEGAnalyzer) Analyze(ctx context.Context, videoPath, tmpDir string) (
 		return AnalysisResult{}, fmt.Errorf("video: analyze: ffmpeg frame extraction: %w: %s", err, output)
 	}
 
-	return analyzeFrames(framesDir)
+	return decodeAndDetect(framesDir, a)
 }
 
 // analyzeFrames decodes every frame file in framesDir and runs
-// participant/motion detection over them. Extracted from Analyze so the
-// decode/detect decision logic (in particular, the too-few-frames vs.
-// zero-participants distinction) is directly unit-testable without shelling
-// out to ffmpeg.
+// participant/motion detection over them using the default (zero-value)
+// FFMPEGAnalyzer configuration. Extracted from Analyze so the decode/detect
+// decision logic (in particular, the too-few-frames vs. zero-participants
+// distinction) is directly unit-testable without shelling out to a real
+// ffmpeg subprocess or threading a config through every test.
 func analyzeFrames(framesDir string) (AnalysisResult, error) {
+	return decodeAndDetect(framesDir, FFMPEGAnalyzer{})
+}
+
+// decodeAndDetect is the shared decode+detect seam behind both analyzeFrames
+// (always using default thresholds) and FFMPEGAnalyzer.Analyze (using its
+// own configured thresholds), so the too-few-frames vs. zero-participants
+// distinction is defined exactly once.
+func decodeAndDetect(framesDir string, cfg FFMPEGAnalyzer) (AnalysisResult, error) {
 	frames, err := decodeFrames(framesDir)
 	if err != nil {
 		return AnalysisResult{}, fmt.Errorf("video: analyze: decode frames: %w", err)
@@ -102,7 +145,7 @@ func analyzeFrames(framesDir string) (AnalysisResult, error) {
 	// motion regions here is criterion 4's valid "zero participants" case,
 	// not an error — detectParticipants already returns an empty (non-nil)
 	// slice in that case.
-	return AnalysisResult{Participants: detectParticipants(frames)}, nil
+	return AnalysisResult{Participants: detectParticipants(frames, cfg)}, nil
 }
 
 // decodeFrames reads every file in dir, in name-sorted (i.e. extraction)
@@ -166,24 +209,67 @@ func toGray(img image.Image) *image.Gray {
 // gridPoint identifies one cell in the coarse motion-detection grid.
 type gridPoint struct{ row, col int }
 
+// scoredRegion is one connected moving region's computed scores, before
+// top-N selection.
+type scoredRegion struct {
+	// score is the region's total accumulated activity (sum, across every
+	// cell and every frame pair, of that cell's average luma diff) — today's
+	// original ranking signal, kept as acceptance criterion 7/8's tie-break.
+	score float64
+	// persistence is the fraction of frame-pairs in which at least one of
+	// the region's cells was active in that specific pair (spec criterion
+	// 7/edge case 1): fighters move near-continuously, so this favors
+	// sustained motion over a single high-magnitude spike (e.g. a referee's
+	// point call).
+	persistence float64
+	cells       []gridPoint
+}
+
 // detectParticipants runs a coarse grid-based, frame-to-frame pixel-diff
-// motion detection across frames, groups moving grid cells into
-// 4-connected regions (a lightweight stand-in for real participant
-// detection, per spec Non-scope: no ML/pose-estimation dependency), and
-// computes each resulting region's activity score as the sum of its cells'
-// accumulated frame-to-frame luma differences.
-func detectParticipants(frames []*image.Gray) []ParticipantResult {
+// motion detection across frames (grid size and per-pair threshold from
+// cfg, defaulting to today's 32px/15.0 when zero), groups moving grid cells
+// into 4-connected regions (a lightweight stand-in for real participant
+// detection, per spec Non-scope: no ML/pose-estimation dependency), scores
+// each region by both its accumulated activity and its persistence (the
+// fraction of frame-pairs it was active in), and keeps only the top
+// cfg.MaxParticipants regions ranked by persistence descending, ties broken
+// by accumulated activity descending (spec criterion 7, edge case 8).
+func detectParticipants(frames []*image.Gray, cfg FFMPEGAnalyzer) []ParticipantResult {
+	gridCellPx := cfg.GridCellPx
+	if gridCellPx <= 0 {
+		gridCellPx = gridCell
+	}
+	thresholdPerPair := cfg.MotionThresholdPerPair
+	if thresholdPerPair <= 0 {
+		thresholdPerPair = motionThresholdPerPair
+	}
+	minCells := cfg.MinRegionCells
+	if minCells <= 0 {
+		minCells = minRegionCells
+	}
+	maxParticipants := cfg.MaxParticipants
+	if maxParticipants <= 0 {
+		maxParticipants = defaultMaxParticipants
+	}
+
 	bounds := frames[0].Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
 	if width == 0 || height == 0 {
 		return []ParticipantResult{}
 	}
-	cols := (width + gridCell - 1) / gridCell
-	rows := (height + gridCell - 1) / gridCell
+	cols := (width + gridCellPx - 1) / gridCellPx
+	rows := (height + gridCellPx - 1) / gridCellPx
 
 	cellActivity := make([][]float64, rows)
+	// cellPairActive[r][c] holds one bool per frame pair processed so far,
+	// recording whether that specific cell was active (diff >=
+	// thresholdPerPair) in that specific pair — the per-pair bookkeeping
+	// persistence scoring needs, distinct from cellActivity's running total
+	// (plan.md Risks #6).
+	cellPairActive := make([][][]bool, rows)
 	for i := range cellActivity {
 		cellActivity[i] = make([]float64, cols)
+		cellPairActive[i] = make([][]bool, cols)
 	}
 
 	pairs := 0
@@ -193,14 +279,14 @@ func detectParticipants(frames []*image.Gray) []ParticipantResult {
 			// skip it rather than failing the whole analysis.
 			continue
 		}
-		accumulateCellDiffs(frames[i-1], frames[i], cellActivity, rows, cols)
+		accumulateCellDiffs(frames[i-1], frames[i], cellActivity, cellPairActive, rows, cols, gridCellPx, thresholdPerPair)
 		pairs++
 	}
 	if pairs == 0 {
 		return []ParticipantResult{}
 	}
 
-	threshold := motionThresholdPerPair * float64(pairs)
+	threshold := thresholdPerPair * float64(pairs)
 	moving := make([][]bool, rows)
 	for r := 0; r < rows; r++ {
 		moving[r] = make([]bool, cols)
@@ -211,16 +297,51 @@ func detectParticipants(frames []*image.Gray) []ParticipantResult {
 
 	regions := connectedComponents(moving, rows, cols)
 
-	participants := make([]ParticipantResult, 0, len(regions))
+	scored := make([]scoredRegion, 0, len(regions))
 	for _, region := range regions {
-		if len(region) < minRegionCells {
+		if len(region) < minCells {
 			continue
 		}
 		var score float64
+		activePairs := make([]bool, pairs)
 		for _, p := range region {
 			score += cellActivity[p.row][p.col]
+			for pairIdx, active := range cellPairActive[p.row][p.col] {
+				if active {
+					activePairs[pairIdx] = true
+				}
+			}
 		}
-		participants = append(participants, ParticipantResult{ActivityScore: score})
+		activeCount := 0
+		for _, active := range activePairs {
+			if active {
+				activeCount++
+			}
+		}
+		scored = append(scored, scoredRegion{
+			score:       score,
+			persistence: float64(activeCount) / float64(pairs),
+			cells:       region,
+		})
+	}
+
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].persistence != scored[j].persistence {
+			return scored[i].persistence > scored[j].persistence
+		}
+		// Tie-break by accumulated activity score, higher wins (spec edge
+		// case 8: keeps region selection deterministic given identical
+		// input frames).
+		return scored[i].score > scored[j].score
+	})
+
+	if len(scored) > maxParticipants {
+		scored = scored[:maxParticipants]
+	}
+
+	participants := make([]ParticipantResult, 0, len(scored))
+	for _, s := range scored {
+		participants = append(participants, ParticipantResult{ActivityScore: s.score})
 	}
 	for i := range participants {
 		participants[i].Label = fmt.Sprintf("Participant %d", i+1)
@@ -229,15 +350,18 @@ func detectParticipants(frames []*image.Gray) []ParticipantResult {
 }
 
 // accumulateCellDiffs adds the average absolute luma difference between prev
-// and next, per grid cell, into cellActivity.
-func accumulateCellDiffs(prev, next *image.Gray, cellActivity [][]float64, rows, cols int) {
+// and next, per grid cell, into cellActivity, and appends one bool per cell
+// to cellPairActive recording whether that cell's diff for this specific
+// pair met thresholdPerPair — the per-pair signal detectParticipants uses to
+// compute each region's persistence score.
+func accumulateCellDiffs(prev, next *image.Gray, cellActivity [][]float64, cellPairActive [][][]bool, rows, cols, gridCellPx int, thresholdPerPair float64) {
 	bounds := prev.Bounds()
 	for r := 0; r < rows; r++ {
 		for c := 0; c < cols; c++ {
-			x0 := bounds.Min.X + c*gridCell
-			y0 := bounds.Min.Y + r*gridCell
-			x1 := min(x0+gridCell, bounds.Max.X)
-			y1 := min(y0+gridCell, bounds.Max.Y)
+			x0 := bounds.Min.X + c*gridCellPx
+			y0 := bounds.Min.Y + r*gridCellPx
+			x1 := min(x0+gridCellPx, bounds.Max.X)
+			y1 := min(y0+gridCellPx, bounds.Max.Y)
 
 			var sum float64
 			var count int
@@ -253,9 +377,13 @@ func accumulateCellDiffs(prev, next *image.Gray, cellActivity [][]float64, rows,
 					count++
 				}
 			}
+
+			var avg float64
 			if count > 0 {
-				cellActivity[r][c] += sum / float64(count)
+				avg = sum / float64(count)
+				cellActivity[r][c] += avg
 			}
+			cellPairActive[r][c] = append(cellPairActive[r][c], avg >= thresholdPerPair)
 		}
 	}
 }
