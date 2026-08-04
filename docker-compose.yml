@@ -47,6 +47,14 @@ services:
       DB_DSN: "root:secret@tcp(mysql:3306)/kumite?parseTime=true"
       REDIS_ADDR: "redis:6379"
       PROCESSING_TIMEOUT: "10m"
+      # Optional motion-detection tuning; unset defaults to 32px grid cells.
+      # MOTION_GRID_CELL_PX: "32"
+      # Optional motion-detection tuning; unset defaults to 15.0 per-pair luma threshold.
+      # MOTION_THRESHOLD_PER_PAIR: "15.0"
+      # Optional motion-detection tuning; unset defaults to 2 minimum connected cells per region.
+      # MOTION_MIN_REGION_CELLS: "2"
+      # Optional participant cap; unset defaults to 2 top-scoring regions kept.
+      # MAX_PARTICIPANTS: "2"
     depends_on:
       mysql:
         condition: service_healthy
