@@ -211,3 +211,84 @@ func TestJobStreamHandler_ClosesOnRevalidationFailure(t *testing.T) {
 		t.Fatal("ServeHTTP did not return within 1s after a revalidation failure (RevalidateInterval=5ms); want it to close the stream promptly, not wait for a real 60s interval")
 	}
 }
+
+// TestJobStreamHandler_EventNameDependsOnPayloadType covers
+// specs/video-processing-improvements/plan.md step 11: ServeHTTP picks the
+// SSE event name from the payload's "type" field — "status" writes
+// "event: job_status", "stage" writes "event: job_stage", and a payload
+// with no "type" field (an old/malformed payload) defensively defaults to
+// "event: job_status" so it's never silently dropped or crashes the stream.
+func TestJobStreamHandler_EventNameDependsOnPayloadType(t *testing.T) {
+	cases := []struct {
+		name          string
+		payload       string
+		wantEventName string
+	}{
+		{
+			name:          `type "status" writes event: job_status`,
+			payload:       `{"type":"status","job_id":1,"user_id":1,"status":"processing"}`,
+			wantEventName: "event: job_status",
+		},
+		{
+			name:          `type "stage" writes event: job_stage`,
+			payload:       `{"type":"stage","job_id":1,"user_id":1,"stage":"downloading"}`,
+			wantEventName: "event: job_stage",
+		},
+		{
+			name:          "missing type field defaults to event: job_status",
+			payload:       `{"job_id":1,"user_id":1,"status":"processing"}`,
+			wantEventName: "event: job_status",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Unbuffered, see package TEST APPROACH NOTE above.
+			events := make(chan []byte)
+			sub := stubEventSubscriber{ch: events}
+			h := &JobStreamHandler{
+				Events:             sub,
+				Sessions:           stubSessionValidator{userID: testUserID},
+				RevalidateInterval: time.Hour,
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			req := httptest.NewRequest(http.MethodGet, "/jobs/stream", nil)
+			req.AddCookie(&http.Cookie{Name: testSessionCookieName, Value: "sess-1"})
+			req = req.WithContext(ctx)
+			req = withUserID(req, testUserID)
+			rec := httptest.NewRecorder()
+
+			done := make(chan struct{})
+			go func() {
+				h.ServeHTTP(rec, req)
+				close(done)
+			}()
+
+			raw := []byte(tc.payload)
+			select {
+			case events <- raw:
+				// ServeHTTP's select received the value; see package TEST
+				// APPROACH NOTE for why this ordering avoids a data race.
+			case <-time.After(1 * time.Second):
+				t.Fatal("handler never read from its event channel within 1s")
+			}
+
+			cancel()
+
+			select {
+			case <-done:
+			case <-time.After(1 * time.Second):
+				t.Fatal("ServeHTTP did not return within 1s after context cancellation")
+			}
+
+			body := rec.Body.String()
+			if !strings.Contains(body, tc.wantEventName) {
+				t.Errorf("body = %q, want it to contain %q", body, tc.wantEventName)
+			}
+			if !strings.Contains(body, string(raw)) {
+				t.Errorf("body = %q, want it to contain the event payload %s", body, raw)
+			}
+		})
+	}
+}

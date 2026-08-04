@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -63,7 +64,7 @@ func (h *JobStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case raw := <-events:
-			if _, err := fmt.Fprintf(w, "event: job_status\ndata: %s\n\n", raw); err != nil {
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", sseEventName(raw), raw); err != nil {
 				return
 			}
 			flusher.Flush()
@@ -73,4 +74,25 @@ func (h *JobStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// sseEventName picks the SSE event name for one raw jobevents payload by
+// minimally peeking at its "type" field — not a full decode into
+// jobevents.StatusChanged/StageChanged, since this handler doesn't otherwise
+// care about payload shape (specs/video-processing-improvements/plan.md
+// step 12). A "stage" type writes "job_stage"; anything else (including an
+// absent/unparseable "type" field, e.g. an old/malformed payload) defaults
+// to "job_status" so an event is never silently dropped or crashes the
+// stream (spec edge case 5 / plan.md Risks #3).
+func sseEventName(raw []byte) string {
+	var payload struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "job_status"
+	}
+	if payload.Type == "stage" {
+		return "job_stage"
+	}
+	return "job_status"
 }
