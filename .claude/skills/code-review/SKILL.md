@@ -30,6 +30,12 @@ description: >
     testable without real I/O in tests. Only flag one if nothing in spec.md/plan.md
     calls for test-fake substitution.
 11. Files outside the plan's scope (check against specs/*/plan.md out-of-scope guard)
+12. A "tests pass" claim based on `go test ./...` alone, when the diff touches
+    Redis/DB-integration code (jobevents, session, otp, job, worker) and
+    TEST_DSN/TEST_REDIS_ADDR-gated tests exist for it — those tests silently
+    skip without live infra. Spin up ephemeral containers and run with both
+    set before approving, or explicitly note in the verdict that this wasn't
+    checked.
 
 ## Remark format
 file:line — issue — why it's a problem — how to fix

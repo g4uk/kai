@@ -7,6 +7,10 @@ Read specs/$ARGUMENTS/spec.md. Create specs/$ARGUMENTS/plan.md:
 ## Order — tests before implementation (TDD). DB migration = separate step and separate commit.
 ## Codegen — if the stack has generation (sqlc, protobuf, openapi) — explicit regeneration step
 ## Risks — what can go wrong, plan B
+  When a step's mechanism has no existing sentinel/type to hook into, decide
+  it definitively rather than "prefer X, fallback Y acceptable" — test-writer's
+  red-phase tests get written before implementation and will lock in whichever
+  the tests happen to assert, making the "fallback" the foregone conclusion.
 ## Out of scope guard — files/directories we do NOT touch
 
 Every step must end with green tests. Do NOT start implementing.

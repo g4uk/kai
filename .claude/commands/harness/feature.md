@@ -13,6 +13,11 @@ is unnecessary and do it directly.
 5. implementer: step-by-step implementation until green
 6. reviewer: verdict on the diff. REQUEST_CHANGES → back to implementer (max 2 rounds,
    then escalate to me)
+   Before advancing past this step: cross-check EVERY deviation named in the
+   implementer's final report against specs/$ARGUMENTS/spec.md — each one needs
+   its own amendment, not just the first/most obvious one. A report with N
+   self-reported deviations and 1 spec.md amendment is a bug in this step, not
+   a resolved handoff.
 7. /harness:verify $ARGUMENTS
 8. Remind me to run /harness:retro $ARGUMENTS after the merge
 
